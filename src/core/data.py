@@ -26,6 +26,25 @@ class DataFetcher:
             'MN1': mt5.TIMEFRAME_MN1
         }
 
+    def get_all_symbols(self) -> List[str]:
+        """Получение списка всех доступных символов"""
+        try:
+            symbols = mt5.symbols_get()
+            if symbols:
+                return [symbol.name for symbol in symbols]
+            return []
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка получения списка символов: {e}")
+            return []
+
+    def get_symbol_info(self, symbol: str) -> Optional[any]:
+        """Получение информации о символе"""
+        try:
+            return mt5.symbol_info(symbol)
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка получения информации о символе {symbol}: {e}")
+            return None
+
     def get_symbols(self, filter_symbol: str = "") -> List[str]:
         """Получает список доступных символов"""
         try:
@@ -47,7 +66,7 @@ class DataFetcher:
             self.logger.error(f"Ошибка получения списка символов: {str(e)}")
             return []
 
-    def get_symbol_info(self, symbol: str) -> Optional[Dict]:
+    def get_symbol_info_full(self, symbol: str) -> Optional[Dict]:
         """Получает подробную информацию о символе"""
         try:
             info = mt5.symbol_info(symbol)
@@ -97,6 +116,42 @@ class DataFetcher:
             self.logger.error(f"Ошибка подготовки символа {symbol}: {str(e)}")
             return False
 
+    def find_correct_symbol(self, base_symbol: str) -> Optional[str]:
+        """
+        Поиск правильного имени символа с учетом суффиксов брокера
+        """
+        possible_suffixes = ['', 'rfd', 'm', 'f', 'q', 'a', 'b', 'c', 'd', 'e']
+
+        for suffix in possible_suffixes:
+            test_symbol = base_symbol + suffix
+            if self._check_symbol_exists(test_symbol):
+                return test_symbol
+
+        # Если не нашли с суффиксами, попробуем найти похожие символы
+        all_symbols = self.get_all_symbols()
+        if all_symbols:
+            for symbol in all_symbols:
+                if base_symbol in symbol:
+                    self.logger.info(f"🔍 Найден похожий символ: {symbol} для базового {base_symbol}")
+                    if self._check_symbol_exists(symbol):
+                        return symbol
+
+        return None
+
+    def _check_symbol_exists(self, symbol: str) -> bool:
+        """Проверка существования символа"""
+        try:
+            # Пробуем получить информацию о символе
+            symbol_info = self.get_symbol_info(symbol)
+            if symbol_info:
+                # Пробуем получить текущую цену
+                price = self.get_current_price(symbol)
+                return price is not None and price.get('bid', 0) > 0
+            return False
+        except Exception as e:
+            self.logger.debug(f"Символ {symbol} не доступен: {e}")
+            return False
+
     def get_rates(self, symbol: str, timeframe: str, count: int = 1000,
                   start_date: Optional[datetime] = None,
                   end_date: Optional[datetime] = None) -> Optional[pd.DataFrame]:
@@ -126,7 +181,15 @@ class DataFetcher:
 
             # Подготавливаем символ
             if not self.prepare_symbol(symbol):
-                return None
+                # Пробуем найти правильный символ
+                correct_symbol = self.find_correct_symbol(symbol)
+                if correct_symbol:
+                    self.logger.info(f"🔄 Авто-исправление символа: {symbol} -> {correct_symbol}")
+                    symbol = correct_symbol
+                    if not self.prepare_symbol(symbol):
+                        return None
+                else:
+                    return None
 
             # Получаем данные в зависимости от параметров
             if start_date and end_date:
@@ -170,7 +233,15 @@ class DataFetcher:
         """Получает текущую цену символа"""
         try:
             if not self.prepare_symbol(symbol):
-                return None
+                # Пробуем найти правильный символ
+                correct_symbol = self.find_correct_symbol(symbol)
+                if correct_symbol:
+                    self.logger.info(f"🔄 Авто-исправление символа: {symbol} -> {correct_symbol}")
+                    symbol = correct_symbol
+                    if not self.prepare_symbol(symbol):
+                        return None
+                else:
+                    return None
 
             tick = mt5.symbol_info_tick(symbol)
             if tick is None:

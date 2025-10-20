@@ -21,7 +21,11 @@ sys.path.insert(0, project_root)
 
 try:
     # Пробуем импортировать из src.core
-    from src.core import MT5, DataFetcher, Trader, setup_logger, Settings
+    from src.core import (
+        MT5, DataFetcher, Trader, setup_logger, Settings,
+        get_available_strategies, create_strategy, TradingStrategy,
+        RealTimeMonitor  # НОВЫЙ ИМПОРТ
+    )
 except ImportError as e:
     print(f"❌ Ошибка импорта: {e}")
     print("💡 Проверьте структуру проекта:")
@@ -39,8 +43,12 @@ class AITrader:
         self.mt5 = None
         self.data_fetcher = None
         self.trader = None
+        self.realtime_monitor = None  # НОВЫЙ АТРИБУТ
         self.running = False
         self.market_available = False
+        self.current_strategy = None
+        self.available_strategies = get_available_strategies()
+        self.monitoring_symbols = []  # НОВЫЙ АТРИБУТ
 
     def check_market_availability(self) -> Tuple[bool, str]:
         """
@@ -165,6 +173,14 @@ class AITrader:
             self.data_fetcher = DataFetcher(self.mt5)
             self.trader = Trader(self.mt5)
 
+            # Инициализируем монитор реального времени
+            self.realtime_monitor = RealTimeMonitor(self.data_fetcher)
+            # Подписываемся на обновления рынка
+            self.realtime_monitor.subscribe(self._on_market_update)
+
+            # Устанавливаем стратегию по умолчанию
+            self.set_strategy('simple_ma')
+
             self.logger.info("✅ AI Trader успешно инициализирован")
             return True
 
@@ -172,219 +188,145 @@ class AITrader:
             self.logger.error(f"💥 Критическая ошибка инициализации: {str(e)}")
             return False
 
-    def select_symbol(self) -> Optional[str]:
-        """Выбор символа из доступных"""
+    def _on_market_update(self, market_data: Dict[str, any]):
+        """Обработчик обновлений рынка в реальном времени"""
         try:
-            symbols = self.data_fetcher.get_symbols()
-            if not symbols:
-                self.logger.error("❌ Не удалось получить список символов")
+            # Логируем важные изменения
+            for symbol, data in market_data['symbols'].items():
+                change = data.get('price_change', 0)
+                if abs(change) > 0.5:  # Значительное изменение
+                    self.logger.info(f"📊 {symbol}: изменение {change:.2f}%")
+
+            # Автоматическая торговля на основе реальных данных (если включена)
+            if getattr(self.settings, 'AUTO_TRADING_ENABLED', False):
+                self._process_real_time_signals(market_data)
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка обработки обновления рынка: {e}")
+
+    def _process_real_time_signals(self, market_data: Dict[str, any]):
+        """Обработка сигналов в реальном времени"""
+        try:
+            for symbol, data in market_data['symbols'].items():
+                # Получаем данные для анализа
+                historical_data = self.data_fetcher.get_rates(symbol, 'M5', count=100)
+                if historical_data is None or historical_data.empty:
+                    continue
+
+                # Применяем текущую стратегию
+                historical_data = self.calculate_advanced_indicators(historical_data)
+                signal_info = self.current_strategy.generate_signal(historical_data)
+
+                # Если сильный сигнал - выполняем сделку
+                if signal_info.get('strength', 0) > 70:
+                    signal = signal_info.get('signal', 'HOLD')
+                    if signal in ['BUY', 'SELL']:
+                        self.logger.info(f"🎯 Реальный сигнал {signal} для {symbol} (сила: {signal_info['strength']}%)")
+                        self._execute_trade(symbol, signal.lower(), signal_info['strength'])
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка обработки сигналов реального времени: {e}")
+
+    def set_strategy(self, strategy_id: str) -> bool:
+        """Установка торговой стратегии"""
+        try:
+            if strategy_id not in self.available_strategies:
+                self.logger.error(f"❌ Стратегия '{strategy_id}' не найдена")
+                return False
+
+            self.current_strategy = create_strategy(strategy_id)
+            self.logger.info(f"🎯 Установлена стратегия: {self.current_strategy.name}")
+            self.logger.info(f"📝 Описание: {self.current_strategy.description}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка установки стратегии: {e}")
+            return False
+
+    def select_strategy(self) -> Optional[str]:
+        """Выбор стратегии из доступных"""
+        try:
+            strategies = self.available_strategies
+            if not strategies:
+                self.logger.error("❌ Не удалось получить список стратегий")
                 return None
 
-            print("\n📊 ДОСТУПНЫЕ СИМВОЛЫ:")
-            print("=" * 40)
+            print("\n🎯 ДОСТУПНЫЕ СТРАТЕГИИ:")
+            print("=" * 50)
+            for i, (strategy_id, strategy_name) in enumerate(strategies.items(), 1):
+                print(f"{i}. {strategy_name} ({strategy_id})")
 
-            # Показываем символы с группировкой
-            forex_symbols = [s for s in symbols if any(
-                currency in s for currency in ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD'])]
-            other_symbols = [s for s in symbols if s not in forex_symbols]
-
-            if forex_symbols:
-                print("\n💱 ВАЛЮТНЫЕ ПАРЫ:")
-                for i, symbol in enumerate(forex_symbols[:15]):  # Показываем первые 15
-                    print(f"  {i + 1}. {symbol}")
-
-            if other_symbols:
-                print("\n📈 ДРУГИЕ ИНСТРУМЕНТЫ:")
-                for i, symbol in enumerate(other_symbols[:10]):  # Показываем первые 10
-                    print(f"  {len(forex_symbols) + i + 1}. {symbol}")
-
-            print("\n" + "=" * 40)
+            print("=" * 50)
 
             while True:
-                choice = input("\n🎯 Выберите символ (номер или название): ").strip()
+                choice = input("\n🎯 Выберите стратегию (номер или идентификатор): ").strip()
 
                 if choice.isdigit():
                     index = int(choice) - 1
-                    if 0 <= index < len(symbols):
-                        selected = symbols[index]
-                        print(f"✅ Выбран символ: {selected}")
-                        return selected
+                    strategy_ids = list(strategies.keys())
+                    if 0 <= index < len(strategy_ids):
+                        selected_id = strategy_ids[index]
+                        print(f"✅ Выбрана стратегия: {strategies[selected_id]}")
+                        return selected_id
                     else:
                         print("❌ Неверный номер. Попробуйте снова.")
                 else:
-                    # Ищем символ по названию
-                    if choice.upper() in symbols:
-                        selected = choice.upper()
-                        print(f"✅ Выбран символ: {selected}")
-                        return selected
+                    if choice in strategies:
+                        print(f"✅ Выбрана стратегия: {strategies[choice]}")
+                        return choice
                     else:
-                        print("❌ Символ не найден. Попробуйте снова.")
+                        print("❌ Стратегия не найдена. Попробуйте снова.")
 
         except Exception as e:
-            self.logger.error(f"❌ Ошибка выбора символа: {e}")
+            self.logger.error(f"❌ Ошибка выбора стратегии: {e}")
             return None
-
-    def select_timeframe(self) -> Optional[str]:
-        """Выбор таймфрейма"""
-        timeframes = {
-            '1': ('M1', '1 минута'),
-            '2': ('M5', '5 минут'),
-            '3': ('M15', '15 минут'),
-            '4': ('M30', '30 минут'),
-            '5': ('H1', '1 час'),
-            '6': ('H4', '4 часа'),
-            '7': ('D1', '1 день'),
-            '8': ('W1', '1 неделя'),
-            '9': ('MN1', '1 месяц')
-        }
-
-        print("\n⏰ ДОСТУПНЫЕ ТАЙМФРЕЙМЫ:")
-        print("=" * 40)
-        for key, (tf, desc) in timeframes.items():
-            print(f"  {key}. {tf} - {desc}")
-        print("=" * 40)
-
-        while True:
-            choice = input("\n🎯 Выберите таймфрейм (1-9): ").strip()
-
-            if choice in timeframes:
-                selected_tf = timeframes[choice][0]
-                print(f"✅ Выбран таймфрейм: {selected_tf}")
-                return selected_tf
-            else:
-                print("❌ Неверный выбор. Введите число от 1 до 9.")
 
     def calculate_advanced_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        Расчет расширенных технических индикаторов
+        Расчет расширенных технических индикаторов с учетом выбранной стратегии
         """
         try:
-            # Копируем данные чтобы избежать предупреждений
+            if self.current_strategy:
+                # Используем индикаторы выбранной стратегии
+                data = self.current_strategy.calculate_indicators(data)
+                self.logger.info(f"✅ Индикаторы стратегии '{self.current_strategy.name}' рассчитаны")
+            else:
+                # Стандартный расчет индикаторов (для обратной совместимости)
+                data = self._calculate_default_indicators(data)
+
+            return data
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка расчета индикаторов: {e}")
+            return data
+
+    def _calculate_default_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Стандартный расчет индикаторов (для обратной совместимости)"""
+        try:
             df = data.copy()
 
-            # 1. RSI (Relative Strength Index) - уже есть в базовых индикаторах
+            # Базовые индикаторы
             if 'rsi' not in df.columns:
                 df = self.data_fetcher.calculate_technical_indicators(df)
 
-            # 2. MACD (Moving Average Convergence Divergence)
+            # Дополнительные индикаторы
             exp1 = df['close'].ewm(span=12).mean()
             exp2 = df['close'].ewm(span=26).mean()
             df['macd'] = exp1 - exp2
             df['macd_signal'] = df['macd'].ewm(span=9).mean()
             df['macd_histogram'] = df['macd'] - df['macd_signal']
 
-            # 3. Bollinger Bands
             df['bb_middle'] = df['close'].rolling(window=20).mean()
             bb_std = df['close'].rolling(window=20).std()
             df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
             df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
-            df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
 
-            # 4. Stochastic Oscillator
-            low_14 = df['low'].rolling(window=14).min()
-            high_14 = df['high'].rolling(window=14).max()
-            df['stoch_k'] = 100 * ((df['close'] - low_14) / (high_14 - low_14))
-            df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
-
-            # 5. Average True Range (ATR)
-            high_low = df['high'] - df['low']
-            high_close_prev = abs(df['high'] - df['close'].shift())
-            low_close_prev = abs(df['low'] - df['close'].shift())
-            true_range = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
-            df['atr'] = true_range.rolling(window=14).mean()
-
-            # 6. Ichimoku Cloud
-            df['ichi_tenkan'] = (df['high'].rolling(window=9).max() + df['low'].rolling(window=9).min()) / 2
-            df['ichi_kijun'] = (df['high'].rolling(window=26).max() + df['low'].rolling(window=26).min()) / 2
-            df['ichi_senkou_a'] = ((df['ichi_tenkan'] + df['ichi_kijun']) / 2).shift(26)
-            df['ichi_senkou_b'] = (
-                    (df['high'].rolling(window=52).max() + df['low'].rolling(window=52).min()) / 2).shift(26)
-            df['ichi_chikou'] = df['close'].shift(-26)
-
-            # 7. Volume Weighted Average Price (VWAP)
-            if 'tick_volume' in df.columns:
-                df['vwap'] = (df['close'] * df['tick_volume']).cumsum() / df['tick_volume'].cumsum()
-
-            # 8. Parabolic SAR
-            df = self._calculate_parabolic_sar(df)
-
-            # 9. Commodity Channel Index (CCI)
-            typical_price = (df['high'] + df['low'] + df['close']) / 3
-            sma_typical = typical_price.rolling(window=20).mean()
-            mad = typical_price.rolling(window=20).apply(lambda x: np.abs(x - x.mean()).mean())
-            df['cci'] = (typical_price - sma_typical) / (0.015 * mad)
-
-            # 10. Williams %R
-            df['williams_r'] = (df['high'].rolling(window=14).max() - df['close']) / (
-                    df['high'].rolling(window=14).max() - df['low'].rolling(window=14).min()) * -100
-
-            self.logger.info("✅ Расширенные индикаторы успешно рассчитаны")
+            self.logger.info("✅ Стандартные индикаторы рассчитаны")
             return df
 
         except Exception as e:
-            self.logger.error(f"❌ Ошибка расчета расширенных индикаторов: {e}")
+            self.logger.error(f"❌ Ошибка расчета стандартных индикаторов: {e}")
             return data
-
-    def _calculate_parabolic_sar(self, df: pd.DataFrame, af_start: float = 0.02, af_increment: float = 0.02,
-                                 af_max: float = 0.2) -> pd.DataFrame:
-        """Расчет Parabolic SAR"""
-        try:
-            high = df['high'].values
-            low = df['low'].values
-            close = df['close'].values
-
-            psar = np.zeros(len(close))
-            trend = np.zeros(len(close))
-            ep = np.zeros(len(close))
-            af = np.zeros(len(close))
-
-            # Инициализация
-            psar[0] = close[0]
-            trend[0] = 1  # 1 = восходящий тренд, -1 = нисходящий
-            ep[0] = high[0] if trend[0] == 1 else low[0]
-            af[0] = af_start
-
-            for i in range(1, len(close)):
-                # Обновление PSAR
-                psar[i] = psar[i - 1] + af[i - 1] * (ep[i - 1] - psar[i - 1])
-
-                # Проверка смены тренда
-                if trend[i - 1] == 1:
-                    if low[i] < psar[i]:
-                        trend[i] = -1
-                        psar[i] = max(high[i - 1], high[i])
-                        ep[i] = low[i]
-                        af[i] = af_start
-                    else:
-                        trend[i] = 1
-                        if high[i] > ep[i - 1]:
-                            ep[i] = high[i]
-                            af[i] = min(af[i - 1] + af_increment, af_max)
-                        else:
-                            ep[i] = ep[i - 1]
-                            af[i] = af[i - 1]
-                else:
-                    if high[i] > psar[i]:
-                        trend[i] = 1
-                        psar[i] = min(low[i - 1], low[i])
-                        ep[i] = high[i]
-                        af[i] = af_start
-                    else:
-                        trend[i] = -1
-                        if low[i] < ep[i - 1]:
-                            ep[i] = low[i]
-                            af[i] = min(af[i - 1] + af_increment, af_max)
-                        else:
-                            ep[i] = ep[i - 1]
-                            af[i] = af[i - 1]
-
-            df['psar'] = psar
-            df['psar_trend'] = trend
-            return df
-
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка расчета Parabolic SAR: {e}")
-            return df
 
     def run_training(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
         """Обучение на исторических данных за 5-6 недель"""
@@ -623,40 +565,68 @@ class AITrader:
         return signals
 
     def _generate_prediction(self, signals: Dict[str, int]) -> Dict[str, any]:
-        """Генерация предсказания на основе сигналов"""
+        """Генерация предсказания с учетом выбранной стратегии"""
         prediction = {}
 
         try:
+            if self.current_strategy:
+                # Используем параметры стратегии для предсказания
+                strategy_params = self.current_strategy.get_prediction_parameters()
+                confidence_threshold = strategy_params.get('confidence_threshold', 60)
+                default_timeframe = strategy_params.get('timeframe', 'MEDIUM')
+                risk_level = strategy_params.get('risk_level', 'MEDIUM')
+            else:
+                # Параметры по умолчанию
+                confidence_threshold = 60
+                default_timeframe = 'MEDIUM'
+                risk_level = 'MEDIUM'
+
             buy_signals = signals.get('buy', 0)
             sell_signals = signals.get('sell', 0)
             neutral_signals = signals.get('neutral', 0)
 
             total_signals = buy_signals + sell_signals + neutral_signals
             if total_signals == 0:
-                return {'direction': 'NEUTRAL', 'confidence': 0, 'timeframe': 'SHORT'}
+                return {
+                    'direction': 'NEUTRAL',
+                    'confidence': 0,
+                    'timeframe': default_timeframe,
+                    'risk_level': risk_level
+                }
 
-            buy_ratio = buy_signals / total_signals
-            sell_ratio = sell_signals / total_signals
+            buy_ratio = buy_signals / total_signals * 100
+            sell_ratio = sell_signals / total_signals * 100
 
-            if buy_ratio > 0.6:
+            if buy_ratio > confidence_threshold:
                 prediction['direction'] = 'BULLISH'
-                prediction['confidence'] = min(int(buy_ratio * 100), 95)
-            elif sell_ratio > 0.6:
+                prediction['confidence'] = min(int(buy_ratio), 95)
+            elif sell_ratio > confidence_threshold:
                 prediction['direction'] = 'BEARISH'
-                prediction['confidence'] = min(int(sell_ratio * 100), 95)
+                prediction['confidence'] = min(int(sell_ratio), 95)
             else:
                 prediction['direction'] = 'NEUTRAL'
                 prediction['confidence'] = max(neutral_signals * 10, 50)
 
-            # Определение временного горизонта предсказания
+            # Временной горизонт предсказания
             if prediction['confidence'] > 80:
+                prediction['timeframe'] = 'LONG'
+            elif prediction['confidence'] > 60:
                 prediction['timeframe'] = 'MEDIUM'
             else:
                 prediction['timeframe'] = 'SHORT'
 
+            prediction['risk_level'] = risk_level
+            prediction['strategy'] = self.current_strategy.name if self.current_strategy else 'Standard'
+
         except Exception as e:
             self.logger.error(f"❌ Ошибка генерации предсказания: {e}")
-            prediction = {'direction': 'NEUTRAL', 'confidence': 0, 'timeframe': 'SHORT'}
+            prediction = {
+                'direction': 'NEUTRAL',
+                'confidence': 0,
+                'timeframe': 'SHORT',
+                'risk_level': 'MEDIUM',
+                'strategy': 'Standard'
+            }
 
         return prediction
 
@@ -683,7 +653,7 @@ class AITrader:
             return "⚪️ НЕОПРЕДЕЛЕННО"
 
     def display_market_analysis(self, analysis: Dict[str, any]):
-        """Отображение анализа рынка"""
+        """Отображение анализа рынка с информацией о стратегии"""
         if not analysis:
             self.logger.error("❌ Нет данных для отображения")
             return
@@ -694,6 +664,7 @@ class AITrader:
             print("=" * 70)
             print(f"📊 Символ: {analysis.get('symbol', 'N/A')}")
             print(f"⏰ Таймфрейм: {analysis.get('timeframe', 'N/A')}")
+            print(f"🎯 Стратегия: {self.current_strategy.name if self.current_strategy else 'Standard'}")
             print(f"💰 Текущая цена: {analysis.get('current_price', 0):.5f}")
             print(f"🕐 Время анализа: {analysis.get('timestamp', 'N/A')}")
 
@@ -718,6 +689,7 @@ class AITrader:
             print(f"   Направление: {direction_emoji} {prediction.get('direction', 'NEUTRAL')}")
             print(f"   Уверенность: {prediction.get('confidence', 0)}%")
             print(f"   Временной горизонт: {prediction.get('timeframe', 'SHORT')}")
+            print(f"   Уровень риска: {prediction.get('risk_level', 'MEDIUM')}")
 
             print("\n💡 РЕКОМЕНДАЦИЯ:")
             recommendation = analysis.get('recommendation', 'N/A')
@@ -814,8 +786,19 @@ class AITrader:
                 test_logger.error("❌ Не удалось получить данные для тестирования")
                 return False
 
-            # Применяем стратегию - ИСПРАВЛЕНИЕ ОШИБКИ С DataFrame
-            signal = self._simple_moving_average_strategy(data)
+            # Применяем стратегию
+            if self.current_strategy:
+                # Используем выбранную стратегию
+                data = self.current_strategy.calculate_indicators(data)
+                signal_info = self.current_strategy.generate_signal(data)
+                signal = signal_info.get('signal', 'HOLD')
+                description = signal_info.get('description', '')
+                test_logger.info(f"📊 Стратегия: {self.current_strategy.name}")
+                test_logger.info(f"📝 {description}")
+            else:
+                # Стандартная стратегия (для обратной совместимости)
+                signal = self._simple_moving_average_strategy(data)
+                test_logger.info("📊 Стратегия: Стандартная (MA)")
 
             # Логируем решение
             current_price = self.data_fetcher.get_current_price(symbol)
@@ -910,14 +893,18 @@ class AITrader:
             self.logger.error(f"Ошибка получения информации об аккаунте: {str(e)}")
 
     def run_simple_strategy(self, symbol: str, timeframe: str):
-        """Запускает простую торговую стратегию (пример)"""
+        """Запускает торговую стратегию с учетом выбранного стиля"""
         try:
             # Проверяем доступность рынка перед торговлей
             if not self.market_available:
                 self.logger.error(f"❌ Торговля невозможна: рынок недоступен для {symbol}")
                 return
 
-            self.logger.info(f"🎯 Запуск стратегии для {symbol} {timeframe}")
+            if not self.current_strategy:
+                self.logger.warning("⚠️ Стратегия не установлена, используем стандартную")
+                self.set_strategy('simple_ma')
+
+            self.logger.info(f"🎯 Запуск стратегии '{self.current_strategy.name}' для {symbol} {timeframe}")
 
             # Получаем исторические данные
             data = self.data_fetcher.get_rates(symbol, timeframe, count=100)
@@ -925,67 +912,72 @@ class AITrader:
                 self.logger.error("❌ Не удалось получить данные")
                 return
 
-            # Простая стратегия на основе скользящих средних
-            signal = self._simple_moving_average_strategy(data)
+            # Рассчитываем индикаторы для выбранной стратегии
+            data = self.calculate_advanced_indicators(data)
+
+            # Генерируем сигнал с использованием выбранной стратегии
+            signal_info = self.current_strategy.generate_signal(data)
+            signal = signal_info.get('signal', 'HOLD')
+            strength = signal_info.get('strength', 0)
+            description = signal_info.get('description', '')
+
+            self.logger.info(f"📊 Сигнал стратегии: {signal} (сила: {strength:.1f}%)")
+            self.logger.info(f"📝 {description}")
 
             if signal == "BUY":
                 self.logger.info(f"📈 Сигнал BUY для {symbol}")
-                # Рассчитываем объем на основе риска
-                volume = self.trader.calculate_position_size(
-                    symbol,
-                    risk_percent=self.settings.RISK_PERCENT,
-                    stop_loss_pips=self.settings.STOPLOSS_PIPS
-                )
-
-                if volume:
-                    # Отправляем ордер
-                    sl = self.settings.STOPLOSS_PIPS if self.settings.ENABLE_STOPLOSS else 0.0
-                    tp = self.settings.TAKEPROFIT_PIPS if self.settings.ENABLE_TAKEPROFIT else 0.0
-
-                    success, message = self.trader.send_order(
-                        symbol=symbol,
-                        order_type='buy',
-                        volume=volume,
-                        stop_loss_pips=sl,  # ИСПРАВЛЕНО: используем правильное имя параметра
-                        take_profit_pips=tp,  # ИСПРАВЛЕНО: используем правильное имя параметра
-                        comment="AI Simple Strategy"
-                    )
-                    if success:
-                        self.logger.info(f"✅ {message}")
-                    else:
-                        self.logger.error(f"❌ {message}")
+                self._execute_trade(symbol, 'buy', strength)
 
             elif signal == "SELL":
                 self.logger.info(f"📉 Сигнал SELL для {symbol}")
-                # Рассчитываем объем на основе риска
-                volume = self.trader.calculate_position_size(
-                    symbol,
-                    risk_percent=self.settings.RISK_PERCENT,
-                    stop_loss_pips=self.settings.STOPLOSS_PIPS
-                )
-
-                if volume:
-                    # Отправляем ордер
-                    sl = self.settings.STOPLOSS_PIPS if self.settings.ENABLE_STOPLOSS else 0.0
-                    tp = self.settings.TAKEPROFIT_PIPS if self.settings.ENABLE_TAKEPROFIT else 0.0
-
-                    success, message = self.trader.send_order(
-                        symbol=symbol,
-                        order_type='sell',
-                        volume=volume,
-                        stop_loss_pips=sl,  # ИСПРАВЛЕНО: используем правильное имя параметра
-                        take_profit_pips=tp,  # ИСПРАВЛЕНО: используем правильное имя параметра
-                        comment="AI Simple Strategy"
-                    )
-                    if success:
-                        self.logger.info(f"✅ {message}")
-                    else:
-                        self.logger.error(f"❌ {message}")
+                self._execute_trade(symbol, 'sell', strength)
             else:
                 self.logger.info(f"⚖️ Нет сигнала для {symbol}")
 
         except Exception as e:
             self.logger.error(f"💥 Ошибка в стратегии: {str(e)}")
+
+    def _execute_trade(self, symbol: str, order_type: str, signal_strength: float):
+        """Выполнение торговой операции с учетом силы сигнала"""
+        try:
+            # Рассчитываем объем на основе риска и силы сигнала
+            base_risk = self.settings.RISK_PERCENT
+            adjusted_risk = base_risk * (signal_strength / 100.0) if signal_strength > 0 else base_risk
+
+            volume = self.trader.calculate_position_size(
+                symbol,
+                risk_percent=adjusted_risk,
+                stop_loss_pips=self.settings.STOPLOSS_PIPS
+            )
+
+            if volume:
+                # Корректируем стоп-лосс и тейк-профит на основе силы сигнала
+                sl = self.settings.STOPLOSS_PIPS if self.settings.ENABLE_STOPLOSS else 0.0
+                tp = self.settings.TAKEPROFIT_PIPS if self.settings.ENABLE_TAKEPROFIT else 0.0
+
+                # Увеличиваем тейк-профит для сильных сигналов
+                if signal_strength > 70:
+                    tp = tp * 1.5  # +50% для сильных сигналов
+                elif signal_strength < 30:
+                    sl = sl * 1.2  # +20% стоп-лосс для слабых сигналов
+
+                success, message = self.trader.send_order(
+                    symbol=symbol,
+                    order_type=order_type,
+                    volume=volume,
+                    stop_loss_pips=sl,
+                    take_profit_pips=tp,
+                    comment=f"{self.current_strategy.name} (сила: {signal_strength:.1f}%)"
+                )
+                if success:
+                    self.logger.info(f"✅ {message}")
+                else:
+                    self.logger.error(f"❌ {message}")
+            else:
+                self.logger.error("❌ Не удалось рассчитать объем позиции")
+
+        except Exception as e:
+            self.logger.error(f"💥 Ошибка выполнения торговой операции: {str(e)}")
 
     def _simple_moving_average_strategy(self, data: pd.DataFrame, short_window: int = 10, long_window: int = 30) -> str:
         """Простая стратегия на скользящих средних с исправлением ошибок"""
@@ -1120,19 +1112,26 @@ class AITrader:
             self.logger.error(f"❌ Ошибка при получении данных: {e}")
 
     def training_and_trading_flow(self):
-        """Полный цикл обучения и торговли"""
+        """Полный цикл обучения и торговли с выбором стратегии"""
         try:
+            # Выбор стратегии
+            print("\n🎯 НАСТРОЙКА СТРАТЕГИИ ДЛЯ ОБУЧЕНИЯ")
+            strategy_id = self.select_strategy()
+            if not strategy_id:
+                return
+
+            if not self.set_strategy(strategy_id):
+                return
+
             symbol = self.select_symbol()
             if not symbol:
-                print("❌ Неверный символ")
                 return
 
             timeframe = self.select_timeframe()
             if not timeframe:
-                print("❌ Неверный таймфрейм")
                 return
 
-            print(f"🎓 Обучение для {symbol} {timeframe}...")
+            print(f"🎓 Обучение для {symbol} {timeframe} с стратегией '{self.current_strategy.name}'...")
             model = self.run_training(symbol, timeframe)
 
             if model is not None:
@@ -1162,9 +1161,341 @@ class AITrader:
         except Exception as e:
             self.logger.error(f"❌ Ошибка в анализе рынка: {e}")
 
+    def strategy_selection_flow(self):
+        """Поток выбора и настройки стратегии"""
+        try:
+            print("\n🎯 ВЫБОР СТРАТЕГИИ ТОРГОВЛИ")
+            print("=" * 50)
+
+            # Показываем текущую стратегию
+            if self.current_strategy:
+                print(f"📊 Текущая стратегия: {self.current_strategy.name}")
+                print(f"📝 {self.current_strategy.description}")
+            else:
+                print("⚠️ Стратегия не установлена")
+
+            print("\n1 - 🔄 Выбрать другую стратегию")
+            print("2 - 📊 Протестировать стратегию")
+            print("3 - 🔙 Вернуться в главное меню")
+            print("=" * 50)
+
+            choice = input("\n🎯 Выберите действие (1-3): ").strip()
+
+            if choice == "1":
+                strategy_id = self.select_strategy()
+                if strategy_id:
+                    if self.set_strategy(strategy_id):
+                        print(f"✅ Стратегия успешно установлена: {self.current_strategy.name}")
+                    else:
+                        print("❌ Не удалось установить стратегию")
+
+            elif choice == "2":
+                self.test_strategy_flow()
+
+            elif choice == "3":
+                return
+
+            else:
+                print("❌ Неизвестная команда")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка в выборе стратегии: {e}")
+
+    def test_strategy_flow(self):
+        """Тестирование выбранной стратегии"""
+        try:
+            if not self.current_strategy:
+                print("❌ Сначала выберите стратегию")
+                return
+
+            symbol = self.select_symbol()
+            if not symbol:
+                return
+
+            timeframe = self.select_timeframe()
+            if not timeframe:
+                return
+
+            print(f"🧪 Тестирование стратегии '{self.current_strategy.name}' на {symbol} {timeframe}...")
+
+            # Получаем исторические данные
+            data = self.data_fetcher.get_rates(symbol, timeframe, count=100)
+            if data is None or data.empty:
+                print("❌ Не удалось получить данные для тестирования")
+                return
+
+            # Рассчитываем индикаторы
+            data = self.calculate_advanced_indicators(data)
+
+            # Генерируем сигналы
+            signal_info = self.current_strategy.generate_signal(data)
+
+            print(f"\n📊 РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ:")
+            print("=" * 40)
+            print(f"🎯 Стратегия: {self.current_strategy.name}")
+            print(f"📈 Символ: {symbol}")
+            print(f"⏰ Таймфрейм: {timeframe}")
+            print(f"📡 Сигнал: {signal_info.get('signal', 'N/A')}")
+            print(f"💪 Сила сигнала: {signal_info.get('strength', 0):.1f}%")
+            print(f"📝 Описание: {signal_info.get('description', 'N/A')}")
+            print("=" * 40)
+
+            # Показываем последние значения индикаторов
+            if not data.empty:
+                print(f"\n📊 Последние значения индикаторов:")
+                for indicator in self.current_strategy.required_indicators:
+                    if indicator in data.columns:
+                        value = data[indicator].iloc[-1]
+                        print(f"   {indicator}: {value:.4f}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка тестирования стратегии: {e}")
+
+    def start_real_time_monitoring(self, symbols: List[str], update_interval: int = 5):
+        """Запуск мониторинга в реальном времени"""
+        try:
+            self.monitoring_symbols = symbols
+            success = self.realtime_monitor.start_monitoring(symbols, update_interval)
+
+            if success:
+                self.logger.info(f"🚀 Запущен мониторинг в реальном времени для {len(symbols)} символов")
+                return True
+            else:
+                self.logger.error("❌ Не удалось запустить мониторинг в реальном времени")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка запуска мониторинга: {e}")
+            return False
+
+    def stop_real_time_monitoring(self):
+        """Остановка мониторинга в реальном времени"""
+        try:
+            self.realtime_monitor.stop_monitoring()
+            self.logger.info("🛑 Мониторинг в реальном времени остановлен")
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка остановки мониторинга: {e}")
+
+    def get_market_summary(self) -> Dict[str, any]:
+        """Получение сводки по рынку"""
+        try:
+            if self.realtime_monitor:
+                return self.realtime_monitor.get_market_summary()
+            else:
+                return {}
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка получения сводки рынка: {e}")
+            return {}
+
+    def real_time_monitoring_flow(self):
+        """Поток мониторинга в реальном времени"""
+        try:
+            print("\n🎯 МОНИТОРИНГ РЫНКА В РЕАЛЬНОМ ВРЕМЕНИ")
+            print("=" * 50)
+
+            # Выбор символов для мониторинга
+            symbols = []
+            print("\n📊 Выбор символов для мониторинга:")
+            print("1 - Основные валютные пары")
+            print("2 - Золото и нефть")
+            print("3 - Индексы")
+            print("4 - Выбрать вручную")
+
+            choice = input("\n🎯 Выберите опцию (1-4): ").strip()
+
+            if choice == "1":
+                symbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD', 'USDCAD']
+            elif choice == "2":
+                symbols = ['XAUUSD', 'XAGUSD', 'XTIUSD', 'XBRUSD']
+            elif choice == "3":
+                symbols = ['US500', 'US30', 'USTEC', 'DE30']
+            elif choice == "4":
+                symbols = self._select_multiple_symbols()
+            else:
+                print("❌ Неверный выбор")
+                return
+
+            if not symbols:
+                print("❌ Не выбраны символы для мониторинга")
+                return
+
+            # Запуск мониторинга
+            print(f"\n🚀 Запуск мониторинга для {len(symbols)} символов...")
+            if self.start_real_time_monitoring(symbols, update_interval=10):
+                self._display_real_time_dashboard()
+            else:
+                print("❌ Не удалось запустить мониторинг")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка в потоке мониторинга: {e}")
+
+    def _select_multiple_symbols(self) -> List[str]:
+        """Выбор нескольких символов"""
+        try:
+            all_symbols = self.data_fetcher.get_symbols()
+            if not all_symbols:
+                return []
+
+            selected_symbols = []
+
+            while True:
+                print(f"\n📊 Доступно символов: {len(all_symbols)}")
+                print("Введите символы через запятую или 'done' для завершения:")
+                print("Пример: EURUSD, GBPUSD, XAUUSD")
+
+                input_str = input("Символы: ").strip().upper()
+
+                if input_str == 'DONE':
+                    break
+
+                symbols_to_add = [s.strip() for s in input_str.split(',')]
+                valid_symbols = []
+
+                for symbol in symbols_to_add:
+                    if symbol in all_symbols:
+                        valid_symbols.append(symbol)
+                    else:
+                        print(f"⚠️ Символ {symbol} не найден")
+
+                selected_symbols.extend(valid_symbols)
+                print(f"✅ Добавлено символов: {len(valid_symbols)}")
+                print(f"📋 Всего выбрано: {len(selected_symbols)}")
+
+            return list(set(selected_symbols))  # Убираем дубликаты
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка выбора символов: {e}")
+            return []
+
+    def _display_real_time_dashboard(self):
+        """Отображение дашборда реального времени"""
+        try:
+            import os
+
+            while True:
+                os.system('cls' if os.name == 'nt' else 'clear')
+
+                summary = self.get_market_summary()
+                if not summary:
+                    print("❌ Нет данных для отображения")
+                    time.sleep(5)
+                    continue
+
+                print("=" * 80)
+                print("🎯 ДАШБОРД РЕАЛЬНОГО ВРЕМЕНИ - AI TRADER")
+                print("=" * 80)
+                print(f"🕐 Последнее обновление: {summary.get('timestamp', 'N/A')}")
+                print(f"📊 Состояние рынка: {summary.get('market_state', 'UNKNOWN')}")
+                print(f"📈 Бычьих символов: {summary.get('bullish_count', 0)}")
+                print(f"📉 Медвежьих символов: {summary.get('bearish_count', 0)}")
+                print(f"⚖️ Боковых символов: {summary.get('sideways_count', 0)}")
+
+                print("\n🚀 ТОП ДВИЖУЩИХСЯ СИМВОЛОВ:")
+                print("-" * 50)
+                for mover in summary.get('top_movers', [])[:5]:
+                    change = mover.get('change', 0)
+                    emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪️"
+                    print(f"{emoji} {mover['symbol']:8} | {change:>+7.2f}% | {mover['current_price']:.5f}")
+
+                print("\n" + "=" * 80)
+                print("⏹️ Нажмите Ctrl+C для остановки мониторинга")
+
+                time.sleep(10)  # Обновление каждые 10 секунд
+
+        except KeyboardInterrupt:
+            print("\n🛑 Остановка мониторинга...")
+            self.stop_real_time_monitoring()
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка отображения дашборда: {e}")
+            self.stop_real_time_monitoring()
+
+    def select_symbol(self) -> Optional[str]:
+        """Выбор символа из доступных"""
+        try:
+            symbols = self.data_fetcher.get_symbols()
+            if not symbols:
+                self.logger.error("❌ Не удалось получить список символов")
+                return None
+
+            print("\n📊 ДОСТУПНЫЕ СИМВОЛЫ:")
+            print("=" * 40)
+
+            # Показываем символы с группировкой
+            forex_symbols = [s for s in symbols if any(
+                currency in s for currency in ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD'])]
+            other_symbols = [s for s in symbols if s not in forex_symbols]
+
+            if forex_symbols:
+                print("\n💱 ВАЛЮТНЫЕ ПАРЫ:")
+                for i, symbol in enumerate(forex_symbols[:15]):  # Показываем первые 15
+                    print(f"  {i + 1}. {symbol}")
+
+            if other_symbols:
+                print("\n📈 ДРУГИЕ ИНСТРУМЕНТЫ:")
+                for i, symbol in enumerate(other_symbols[:10]):  # Показываем первые 10
+                    print(f"  {len(forex_symbols) + i + 1}. {symbol}")
+
+            print("\n" + "=" * 40)
+
+            while True:
+                choice = input("\n🎯 Выберите символ (номер или название): ").strip()
+
+                if choice.isdigit():
+                    index = int(choice) - 1
+                    if 0 <= index < len(symbols):
+                        selected = symbols[index]
+                        print(f"✅ Выбран символ: {selected}")
+                        return selected
+                    else:
+                        print("❌ Неверный номер. Попробуйте снова.")
+                else:
+                    # Ищем символ по названию
+                    if choice.upper() in symbols:
+                        selected = choice.upper()
+                        print(f"✅ Выбран символ: {selected}")
+                        return selected
+                    else:
+                        print("❌ Символ не найден. Попробуйте снова.")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка выбора символа: {e}")
+            return None
+
+    def select_timeframe(self) -> Optional[str]:
+        """Выбор таймфрейма"""
+        timeframes = {
+            '1': ('M1', '1 минута'),
+            '2': ('M5', '5 минут'),
+            '3': ('M15', '15 минут'),
+            '4': ('M30', '30 минут'),
+            '5': ('H1', '1 час'),
+            '6': ('H4', '4 часа'),
+            '7': ('D1', '1 день'),
+            '8': ('W1', '1 неделя'),
+            '9': ('MN1', '1 месяц')
+        }
+
+        print("\n⏰ ДОСТУПНЫЕ ТАЙМФРЕЙМЫ:")
+        print("=" * 40)
+        for key, (tf, desc) in timeframes.items():
+            print(f"  {key}. {tf} - {desc}")
+        print("=" * 40)
+
+        while True:
+            choice = input("\n🎯 Выберите таймфрейм (1-9): ").strip()
+
+            if choice in timeframes:
+                selected_tf = timeframes[choice][0]
+                print(f"✅ Выбран таймфрейм: {selected_tf}")
+                return selected_tf
+            else:
+                print("❌ Неверный выбор. Введите число от 1 до 9.")
+
     def shutdown(self):
         """Корректное завершение работы"""
         self.logger.info("🛑 Завершение работы AI Trader...")
+        if self.realtime_monitor:
+            self.stop_real_time_monitoring()
         if self.mt5:
             self.mt5.shutdown()
         self.logger.info("👋 AI Trader остановлен")
