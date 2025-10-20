@@ -292,8 +292,9 @@ class AITrader:
             print("1 - 🧪 Начать тестовую торговлю")
             print("2 - 🎯 Начать реальную торговлю")
             print("3 - 🔙 Вернуться в главное меню")
+            print("=" * 50)
 
-            choice = input("\nВыберите действие: ").strip()
+            choice = input("\nВыберите действие (1-3): ").strip()
 
             if choice == "1":
                 self.run_test_trading(symbol, timeframe, model)
@@ -302,7 +303,7 @@ class AITrader:
             elif choice == "3":
                 break
             else:
-                print("❌ Неизвестная команда")
+                print("❌ Неизвестная команда. Выберите от 1 до 3.")
 
     def run_test_trading(self, symbol: str, timeframe: str, model: pd.DataFrame):
         """Тестовая торговля с сохранением логов"""
@@ -628,10 +629,29 @@ class AITrader:
 
             self.logger.info(f"📋 Найдено {len(positions)} позиций для закрытия")
 
+            # Показываем информацию о позициях перед закрытием
+            total_profit = sum(pos.get('profit', 0) + pos.get('swap', 0) for pos in positions)
+            self.logger.info(f"💰 Общий P&L перед закрытием: {total_profit:.2f}")
+
+            # Запрашиваем подтверждение
+            confirm = input("Вы уверены, что хотите закрыть все позиции? (y/N): ").strip().lower()
+            if confirm not in ['y', 'yes', 'да']:
+                self.logger.info("❌ Закрытие позиций отменено")
+                return
+
             # Закрываем все позиции
             success, message = self.trader.close_all_positions(symbol)
             if success:
-                self.logger.info(f"✅ {message}")
+                # Разделяем сообщение на строки для лучшего форматирования
+                if " | " in message:
+                    lines = message.split(" | ")
+                    self.logger.info("=" * 50)
+                    for line in lines:
+                        if line.strip():
+                            self.logger.info(line)
+                    self.logger.info("=" * 50)
+                else:
+                    self.logger.info(f"✅ {message}")
             else:
                 self.logger.error(f"❌ {message}")
 
