@@ -1,232 +1,276 @@
 #!/usr/bin/env python3
 """
-Точка входа для AI Trader - консольная версия
+Главный модуль AI Trader - Точка входа в приложение
 """
 
-import sys
 import os
-import time
+import sys
 import argparse
+import logging
+from datetime import datetime
+from dotenv import load_dotenv
 
-# Добавляем путь к src в PYTHONPATH
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+# Добавляем путь к корневой директории проекта
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ai_trader import AITrader
+from src.core.logger import setup_logger  # Исправленный импорт
 
 
-def interactive_menu():
-    """Интерактивное меню"""
+def parse_arguments():
+    """Парсинг аргументов командной строки"""
+    parser = argparse.ArgumentParser(description='AI Trader - Automated Trading System')
+    parser.add_argument('--strategy', type=str, help='Торговая стратегия (simple_ma, rsi, macd, bollinger, advanced)')
+    parser.add_argument('--symbol', type=str, help='Торговый символ (например: EURUSD)')
+    parser.add_argument('--timeframe', type=str, default='H1', help='Таймфрейм (M1, M5, H1, H4, D1)')
+    parser.add_argument('--test', action='store_true', help='Запуск в тестовом режиме')
+    parser.add_argument('--demo', action='store_true', help='Использовать демо-счет')
+    parser.add_argument('--risk', type=float, help='Уровень риска в процентах')
+
+    return parser.parse_args()
+
+
+def show_menu():
+    """Отображение главного меню"""
+    print("\n" + "=" * 60)
+    print("🎯 AI TRADER - ГЛАВНОЕ МЕНЮ")
     print("=" * 60)
-    print("🎯 AI TRADER MT5 - КОНСОЛЬНАЯ ВЕРСИЯ")
-    print("=" * 60)
-    print("1 - 📊 Показать информацию о счете")
-    print("2 - 🎯 Запустить торговую стратегию")
-    print("3 - 🧪 Выполнить тестовую сделку")
-    print("4 - 🚫 Закрыть все позиции")
-    print("5 - 🔄 Обновить данные")
-    print("6 - 🎓 Обучение и торговля")
-    print("7 - 🔍 Анализ рынка и предсказания")
-    print("8 - ⚡ Выбор стратегии торговли")
-    print("9 - 📡 Мониторинг рынка в реальном времени")  # НОВЫЙ ПУНКТ
-    print("0 - 🚪 Выход")
+    print("1. 📊 Показать список символов")
+    print("2. 🔍 Анализ символа")
+    print("3. 📈 Технический анализ")
+    print("4. 💰 Торговые операции")
+    print("5. 📋 Мои позиции и ордера")
+    print("6. ⚙️ Настройки рисков")
+    print("7. 🧪 Тестовый режим")
+    print("8. 🎯 Выбор стратегии торговли")
+    print("9. 📡 Мониторинг рынка в реальном времени")
+    print("0. ❌ Выход")
     print("=" * 60)
 
 
-def select_symbol_interactive(trader):
-    """Интерактивный выбор символа из списка"""
-    try:
-        symbols = trader.data_fetcher.get_symbols()
-        if not symbols:
-            print("❌ Не удалось получить список символов")
-            return None
-
-        print("\n📊 ДОСТУПНЫЕ СИМВОЛЫ:")
-        print("=" * 40)
-
-        # Показываем символы с группировкой
-        forex_symbols = [s for s in symbols if
-                         any(currency in s for currency in ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD'])]
-        other_symbols = [s for s in symbols if s not in forex_symbols]
-
-        if forex_symbols:
-            print("\n💱 ВАЛЮТНЫЕ ПАРЫ:")
-            for i, symbol in enumerate(forex_symbols[:15]):  # Показываем первые 15
-                print(f"  {i + 1}. {symbol}")
-
-        if other_symbols:
-            print("\n📈 ДРУГИЕ ИНСТРУМЕНТЫ:")
-            for i, symbol in enumerate(other_symbols[:10]):  # Показываем первые 10
-                print(f"  {len(forex_symbols) + i + 1}. {symbol}")
-
-        print("\n" + "=" * 40)
-
-        while True:
-            choice = input("\n🎯 Выберите символ (номер или название): ").strip()
-
-            if choice.isdigit():
-                index = int(choice) - 1
-                if 0 <= index < len(symbols):
-                    selected = symbols[index]
-                    print(f"✅ Выбран символ: {selected}")
-                    return selected
-                else:
-                    print("❌ Неверный номер. Попробуйте снова.")
-            else:
-                # Ищем символ по названию
-                if choice.upper() in symbols:
-                    selected = choice.upper()
-                    print(f"✅ Выбран символ: {selected}")
-                    return selected
-                else:
-                    print("❌ Символ не найден. Попробуйте снова.")
-
-    except Exception as e:
-        print(f"❌ Ошибка выбора символа: {e}")
-        return None
+def show_strategy_menu():
+    """Меню выбора стратегии"""
+    print("\n" + "=" * 60)
+    print("🎯 ВЫБОР СТРАТЕГИИ ТОРГОВЛИ")
+    print("=" * 60)
+    print("1. 📈 Улучшенная MA стратегия (Средний риск)")
+    print("2. 📊 Улучшенная RSI стратегия (Низкий риск)")
+    print("3. 🔄 Улучшенная MACD стратегия (Средний риск)")
+    print("4. 📉 Улучшенная Bollinger Bands стратегия (Высокий риск)")
+    print("5. 🚀 Продвинутая мульти-стратегия (Низкий риск)")
+    print("6. 📋 Показать текущую стратегию")
+    print("7. 🔙 Назад в главное меню")
+    print("=" * 60)
 
 
-def select_timeframe_interactive():
-    """Интерактивный выбор таймфрейма"""
-    timeframes = {
-        '1': ('M1', '1 минута'),
-        '2': ('M5', '5 минут'),
-        '3': ('M15', '15 минут'),
-        '4': ('M30', '30 минут'),
-        '5': ('H1', '1 час'),
-        '6': ('H4', '4 часа'),
-        '7': ('D1', '1 день'),
-        '8': ('W1', '1 неделя'),
-        '9': ('MN1', '1 месяц')
-    }
-
-    print("\n⏰ ДОСТУПНЫЕ ТАЙМФРЕЙМЫ:")
-    print("=" * 40)
-    for key, (tf, desc) in timeframes.items():
-        print(f"  {key}. {tf} - {desc}")
-    print("=" * 40)
-
-    while True:
-        choice = input("\n🎯 Выберите таймфрейм (1-9): ").strip()
-
-        if choice in timeframes:
-            selected_tf = timeframes[choice][0]
-            print(f"✅ Выбран таймфрейм: {selected_tf}")
-            return selected_tf
-        else:
-            print("❌ Неверный выбор. Введите число от 1 до 9.")
+def show_realtime_monitoring_info():
+    """Информация о мониторинге в реальном времени"""
+    print("\n" + "=" * 60)
+    print("📡 МОНИТОРИНГ РЫНКА В РЕАЛЬНОМ ВРЕМЕНИ")
+    print("=" * 60)
+    print("💡 Управление мониторингом:")
+    print("   • Введите 'stop' - остановить мониторинг")
+    print("   • Введите 'status' - показать статус")
+    print("   • Введите 'summary' - показать сводку рынка")
+    print("   • Введите 'symbols' - показать отслеживаемые символы")
+    print("   • Введите 'exit' - вернуться в меню")
+    print("=" * 60)
+    print("🔄 Мониторинг автоматически обновляет данные каждые 5 секунд")
+    print("📊 Отслеживаются изменения цен, объемы и технические индикаторы")
+    print("🎯 Система определяет общее состояние рынка (Бычье/Медвежье/Боковое)")
+    print("=" * 60)
 
 
 def main():
-    """Главная функция"""
-    parser = argparse.ArgumentParser(description='AI Trader for MT5 - Console Version')
-    parser.add_argument('--auto', action='store_true', help='Автоматический режим')
-    parser.add_argument('--strategy', type=str, help='ID стратегии для использования')
+    """Главная функция приложения"""
+    # Загрузка переменных окружения
+    load_dotenv()
 
-    args = parser.parse_args()
+    # Настройка логирования
+    setup_logger()
+    logger = logging.getLogger('AITrader')
 
-    trader = AITrader()
+    # Парсинг аргументов командной строки
+    args = parse_arguments()
 
     try:
-        # Инициализация
-        if not trader.initialize():
-            print("❌ Не удалось инициализировать AI Trader")
-            sys.exit(1)
+        # Инициализация AI Trader
+        logger.info("🚀 Инициализация AI Trader...")
+        trader = AITrader()
 
-        # Установка стратегии из аргументов командной строки
+        if not trader.initialize():
+            logger.error("❌ Не удалось инициализировать AI Trader")
+            return
+
+        # Применение аргументов командной строки
         if args.strategy:
             if trader.set_strategy(args.strategy):
-                print(f"✅ Установлена стратегия из аргументов: {args.strategy}")
+                logger.info(f"✅ Стратегия установлена: {args.strategy}")
             else:
-                print(f"❌ Не удалось установить стратегию: {args.strategy}")
+                logger.error(f"❌ Не удалось установить стратегию: {args.strategy}")
 
-        if args.auto:
-            # Автоматический режим
-            print("🤖 Автоматический режим запущен")
-            while True:
+        if args.risk:
+            trader.update_risk_management(args.risk)
+            logger.info(f"✅ Уровень риска установлен: {args.risk}%")
+
+        # Запуск в тестовом режиме если указан аргумент
+        if args.test:
+            logger.info("🧪 Запуск в тестовом режиме...")
+            if args.symbol:
+                trader.run_simple_strategy(args.symbol, args.timeframe)
+            else:
+                trader.test_strategy_flow()
+            return
+
+        # Основной цикл меню
+        while True:
+            show_menu()
+            choice = input("\n📝 Выберите пункт меню: ").strip()
+
+            if choice == '0':
+                print("\n👋 До свидания!")
+                break
+
+            elif choice == '1':
+                # Показать список символов
+                print("\n📊 ЗАГРУЗКА СПИСКА СИМВОЛОВ...")
+                trader.show_available_symbols()
+
+            elif choice == '2':
+                # Анализ символа
+                print("\n🔍 АНАЛИЗ СИМВОЛА")
+                symbol = input("Введите символ для анализа (например: EURUSD): ").strip()
+                if symbol:
+                    trader.analyze_symbol(symbol)
+                else:
+                    print("❌ Не указан символ для анализа")
+
+            elif choice == '3':
+                # Технический анализ
+                print("\n📈 ТЕХНИЧЕСКИЙ АНАЛИЗ")
+                symbol = input("Введите символ для анализа: ").strip()
+                if symbol:
+                    timeframe = input("Введите таймфрейм (M1, M5, H1, H4, D1) [H1]: ").strip() or 'H1'
+                    trader.technical_analysis_flow(symbol, timeframe)
+                else:
+                    print("❌ Не указан символ для анализа")
+
+            elif choice == '4':
+                # Торговые операции
+                print("\n💰 ТОРГОВЫЕ ОПЕРАЦИИ")
+                trader.trading_operations_flow()
+
+            elif choice == '5':
+                # Мои позиции и ордера
+                print("\n📋 МОИ ПОЗИЦИИ И ОРДЕРА")
+                trader.show_positions_and_orders()
+
+            elif choice == '6':
+                # Настройки рисков
+                print("\n⚙️ НАСТРОЙКИ УПРАВЛЕНИЯ РИСКАМИ")
                 try:
-                    trader.run_simple_strategy(
-                        trader.settings.DEFAULT_SYMBOL,
-                        trader.settings.DEFAULT_TIMEFRAME
-                    )
-                    time.sleep(60)  # Пауза 1 минута между проверками
-                except KeyboardInterrupt:
-                    break
-        else:
-            # Интерактивный режим
-            while True:
-                try:
-                    interactive_menu()
-                    choice = input("\n🎯 Выберите действие (0-9): ").strip()  # Обновлен диапазон (0-9)
+                    risk_percent = float(input("Введите уровень риска в % (например: 1.0): "))
+                    trader.update_risk_management(risk_percent)
+                    print(f"✅ Уровень риска установлен: {risk_percent}%")
+                except ValueError:
+                    print("❌ Неверное значение риска")
 
-                    if choice == "1":
-                        trader.show_account_info()
+            elif choice == '7':
+                # Тестовый режим
+                print("\n🧪 ТЕСТОВЫЙ РЕЖИМ")
+                trader.test_strategy_flow()
 
-                    elif choice == "2":
-                        # Запуск стратегии с выбором символа и таймфрейма из списка
-                        symbol = select_symbol_interactive(trader)
-                        if not symbol:
-                            continue
+            elif choice == '8':
+                # Выбор стратегии торговли
+                strategy_menu_loop(trader)
 
-                        timeframe = select_timeframe_interactive()
-                        if not timeframe:
-                            continue
+            elif choice == '9':
+                # Мониторинг рынка в реальном времени
+                print("\n📡 ЗАПУСК МОНИТОРИНГА РЫНКА...")
+                show_realtime_monitoring_info()
+                trader.real_time_monitoring_flow()
 
-                        trader.run_simple_strategy(symbol, timeframe)
+            else:
+                print("❌ Неверный выбор. Попробуйте снова.")
 
-                    elif choice == "3":
-                        # Тестовая сделка с выбором символа из списка
-                        symbol = select_symbol_interactive(trader)
-                        if symbol:
-                            trader.run_test_trade(symbol)
-
-                    elif choice == "4":
-                        # Используем новый метод для закрытия позиций
-                        trader.close_all_positions_interactive()
-
-                    elif choice == "5":
-                        # Обновление данных с выбором символа из списка
-                        symbol = select_symbol_interactive(trader)
-                        if symbol:
-                            trader.show_recent_data(symbol)
-
-                    elif choice == "6":
-                        # Новый функционал: Обучение и торговля
-                        trader.training_and_trading_flow()
-
-                    elif choice == "7":
-                        # Новый пункт: Анализ рынка и предсказания
-                        trader.market_analysis_flow()
-
-                    elif choice == "8":
-                        # Выбор и настройка стратегии
-                        trader.strategy_selection_flow()
-
-                    elif choice == "9":  # НОВЫЙ ПУНКТ МЕНЮ
-                        # Мониторинг рынка в реальном времени
-                        trader.real_time_monitoring_flow()
-
-                    elif choice == "0":
-                        print("👋 Завершение работы...")
-                        break
-                    else:
-                        print("❌ Неизвестная команда. Выберите число от 0 до 9.")  # Обновлен диапазон
-
-                    input("\n📝 Нажмите Enter для продолжения...")
-
-                except KeyboardInterrupt:
-                    print("\n🛑 Получен сигнал прерывания")
-                    break
-                except Exception as e:
-                    print(f"💥 Ошибка: {str(e)}")
+            input("\n↵ Нажмите Enter для продолжения...")
 
     except KeyboardInterrupt:
-        print("\n🛑 Получен сигнал прерывания")
+        print("\n\n⚠️ Приложение прервано пользователем")
+        logger.info("Приложение прервано пользователем (Ctrl+C)")
     except Exception as e:
-        print(f"💥 Критическая ошибка: {str(e)}")
+        logger.error(f"❌ Критическая ошибка в приложении: {e}")
+        print(f"\n❌ Произошла критическая ошибка: {e}")
     finally:
-        trader.shutdown()
-        print("👋 AI Trader завершил работу")
+        # Гарантированное завершение
+        try:
+            if 'trader' in locals():
+                trader.shutdown()
+                logger.info("✅ AI Trader завершил работу")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при завершении работы: {e}")
+
+
+def strategy_menu_loop(trader):
+    """Цикл меню выбора стратегии"""
+    while True:
+        show_strategy_menu()
+        choice = input("\n📝 Выберите стратегию: ").strip()
+
+        if choice == '1':
+            if trader.set_strategy('simple_ma'):
+                print("✅ Установлена Улучшенная MA стратегия")
+            else:
+                print("❌ Ошибка установки стратегии")
+
+        elif choice == '2':
+            if trader.set_strategy('rsi'):
+                print("✅ Установлена Улучшенная RSI стратегия")
+            else:
+                print("❌ Ошибка установки стратегии")
+
+        elif choice == '3':
+            if trader.set_strategy('macd'):
+                print("✅ Установлена Улучшенная MACD стратегия")
+            else:
+                print("❌ Ошибка установки стратегии")
+
+        elif choice == '4':
+            if trader.set_strategy('bollinger'):
+                print("✅ Установлена Улучшенная Bollinger Bands стратегия")
+            else:
+                print("❌ Ошибка установки стратегии")
+
+        elif choice == '5':
+            if trader.set_strategy('advanced'):
+                print("✅ Установлена Продвинутая мульти-стратегия")
+            else:
+                print("❌ Ошибка установки стратегии")
+
+        elif choice == '6':
+            # Показать текущую стратегию
+            current_strategy = trader.get_current_strategy()
+            if current_strategy:
+                print(f"\n📋 ТЕКУЩАЯ СТРАТЕГИЯ: {current_strategy['name']}")
+                print(f"📝 Описание: {current_strategy['description']}")
+                print(f"⚡ Уровень риска: {current_strategy['risk_level']}")
+            else:
+                print("❌ Стратегия не установлена")
+
+        elif choice == '7':
+            break
+
+        else:
+            print("❌ Неверный выбор. Попробуйте снова.")
+
+        input("\n↵ Нажмите Enter для продолжения...")
 
 
 if __name__ == "__main__":
+    print("🚀 AI TRADER - Automated Trading System")
+    print("📅 Запуск:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    print("🔒 Версия: AI Trader 1.2.0")
+    print("📊 Статус: PRODUCTION READY 🟢")
+    print("\n" + "=" * 50)
+
     main()

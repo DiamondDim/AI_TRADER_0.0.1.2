@@ -26,6 +26,7 @@ class RealTimeMonitor:
         self.symbols = []
         self.symbol_mapping = {}  # Сопоставление базовых символов с полными именами
         self.update_interval = 5  # секунды
+        self.stop_event = threading.Event()
 
     def start_monitoring(self, symbols: List[str], update_interval: int = 5):
         """Запуск мониторинга символов"""
@@ -33,6 +34,7 @@ class RealTimeMonitor:
             self.symbols = symbols
             self.update_interval = update_interval
             self.running = True
+            self.stop_event.clear()
 
             # Инициализируем сопоставление символов
             self._initialize_symbol_mapping(symbols)
@@ -41,11 +43,28 @@ class RealTimeMonitor:
             self.thread.start()
 
             self.logger.info(f"🚀 Запущен мониторинг в реальном времени для {len(symbols)} символов")
+            self.logger.info("💡 Для остановки мониторинга используйте команду 'stop' в основном меню")
             return True
 
         except Exception as e:
             self.logger.error(f"❌ Ошибка запуска мониторинга: {e}")
             return False
+
+    def stop_monitoring(self):
+        """Остановка мониторинга"""
+        self.running = False
+        self.stop_event.set()
+
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=10)
+            if self.thread.is_alive():
+                self.logger.warning("⚠️ Поток мониторинга не завершился корректно")
+
+        self.logger.info("🛑 Мониторинг остановлен")
+
+    def is_running(self) -> bool:
+        """Проверка статуса мониторинга"""
+        return self.running and not self.stop_event.is_set()
 
     def _initialize_symbol_mapping(self, symbols: List[str]):
         """Инициализация сопоставления символов с правильными именами"""
@@ -95,13 +114,6 @@ class RealTimeMonitor:
             self.logger.debug(f"Символ {symbol} не доступен: {e}")
             return False
 
-    def stop_monitoring(self):
-        """Остановка мониторинга"""
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=5)
-        self.logger.info("🛑 Мониторинг остановлен")
-
     def subscribe(self, callback: Callable):
         """Подписка на обновления рынка"""
         self.subscribers.append(callback)
@@ -115,7 +127,7 @@ class RealTimeMonitor:
 
     def _monitoring_loop(self):
         """Основной цикл мониторинга"""
-        while self.running:
+        while self.running and not self.stop_event.is_set():
             try:
                 market_data = self._get_real_time_data()
 
@@ -126,11 +138,13 @@ class RealTimeMonitor:
                     except Exception as e:
                         self.logger.error(f"❌ Ошибка в callback подписчика: {e}")
 
-                time.sleep(self.update_interval)
+                # Используем stop_event для ожидания с возможностью прерывания
+                self.stop_event.wait(self.update_interval)
 
             except Exception as e:
                 self.logger.error(f"❌ Ошибка в цикле мониторинга: {e}")
-                time.sleep(self.update_interval)
+                # Используем stop_event для ожидания с возможностью прерывания
+                self.stop_event.wait(self.update_interval)
 
     def _get_real_time_data(self) -> Dict[str, any]:
         """Получение данных в реальном времени"""
@@ -146,6 +160,10 @@ class RealTimeMonitor:
             successful_symbols = 0
 
             for base_symbol in self.symbols:
+                # Проверяем, не нужно ли остановить мониторинг
+                if not self.running or self.stop_event.is_set():
+                    break
+
                 symbol = self.symbol_mapping.get(base_symbol, base_symbol)
 
                 try:

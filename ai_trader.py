@@ -1322,7 +1322,7 @@ class AITrader:
             # Запуск мониторинга
             print(f"\n🚀 Запуск мониторинга для {len(symbols)} символов...")
             if self.start_real_time_monitoring(symbols, update_interval=10):
-                self._display_real_time_dashboard()
+                self._display_real_time_control_panel()
             else:
                 print("❌ Не удалось запустить мониторинг")
 
@@ -1367,47 +1367,110 @@ class AITrader:
             self.logger.error(f"❌ Ошибка выбора символов: {e}")
             return []
 
-    def _display_real_time_dashboard(self):
-        """Отображение дашборда реального времени"""
+    def _display_real_time_control_panel(self):
+        """Отображение панели управления мониторингом в реальном времени"""
         try:
-            import os
+            print("\n" + "=" * 60)
+            print("🎯 ПАНЕЛЬ УПРАВЛЕНИЯ МОНИТОРИНГОМ")
+            print("=" * 60)
+            print("💡 Доступные команды:")
+            print("   • 'stop' - остановить мониторинг")
+            print("   • 'status' - показать статус мониторинга")
+            print("   • 'summary' - показать сводку по рынку")
+            print("   • 'symbols' - показать отслеживаемые символы")
+            print("   • 'exit' - вернуться в главное меню")
+            print("=" * 60)
 
+            # Основной цикл управления
             while True:
-                os.system('cls' if os.name == 'nt' else 'clear')
+                try:
+                    command = input("\n📝 Введите команду: ").strip().lower()
 
-                summary = self.get_market_summary()
-                if not summary:
-                    print("❌ Нет данных для отображения")
-                    time.sleep(5)
+                    if command in ['stop', 'exit', 'quit', 'q']:
+                        break
+                    elif command == 'status':
+                        self._show_monitoring_status()
+                    elif command == 'summary':
+                        self._show_market_summary()
+                    elif command == 'symbols':
+                        self._show_monitored_symbols()
+                    elif command == '':
+                        # Просто обновляем вывод
+                        self._show_market_summary()
+                    else:
+                        print("❌ Неизвестная команда. Доступные команды: stop, status, summary, symbols, exit")
+
+                except KeyboardInterrupt:
+                    print("\n⚠️ Для остановки мониторинга используйте команду 'stop'")
+                    continue
+                except Exception as e:
+                    self.logger.error(f"❌ Ошибка ввода: {e}")
                     continue
 
-                print("=" * 80)
-                print("🎯 ДАШБОРД РЕАЛЬНОГО ВРЕМЕНИ - AI TRADER")
-                print("=" * 80)
-                print(f"🕐 Последнее обновление: {summary.get('timestamp', 'N/A')}")
-                print(f"📊 Состояние рынка: {summary.get('market_state', 'UNKNOWN')}")
-                print(f"📈 Бычьих символов: {summary.get('bullish_count', 0)}")
-                print(f"📉 Медвежьих символов: {summary.get('bearish_count', 0)}")
-                print(f"⚖️ Боковых символов: {summary.get('sideways_count', 0)}")
-
-                print("\n🚀 ТОП ДВИЖУЩИХСЯ СИМВОЛОВ:")
-                print("-" * 50)
-                for mover in summary.get('top_movers', [])[:5]:
-                    change = mover.get('change', 0)
-                    emoji = "🟢" if change > 0 else "🔴" if change < 0 else "⚪️"
-                    print(f"{emoji} {mover['symbol']:8} | {change:>+7.2f}% | {mover['current_price']:.5f}")
-
-                print("\n" + "=" * 80)
-                print("⏹️ Нажмите Ctrl+C для остановки мониторинга")
-
-                time.sleep(10)  # Обновление каждые 10 секунд
-
-        except KeyboardInterrupt:
-            print("\n🛑 Остановка мониторинга...")
+            # Останавливаем мониторинг при выходе
             self.stop_real_time_monitoring()
+            print("\n✅ Мониторинг остановлен")
+
         except Exception as e:
-            self.logger.error(f"❌ Ошибка отображения дашборда: {e}")
+            self.logger.error(f"❌ Ошибка отображения панели управления: {e}")
             self.stop_real_time_monitoring()
+
+    def _show_monitoring_status(self):
+        """Показать статус мониторинга"""
+        if hasattr(self, 'realtime_monitor') and self.realtime_monitor:
+            status = "🟢 АКТИВЕН" if self.realtime_monitor.is_running() else "🔴 ОСТАНОВЛЕН"
+            symbols = self.realtime_monitor.symbols
+            mapping = self.realtime_monitor.get_symbol_mapping()
+
+            print(f"\n📊 Статус мониторинга: {status}")
+            print(f"📈 Отслеживаемые символы: {len(symbols)}")
+            print(f"🔄 Интервал обновления: {self.realtime_monitor.update_interval} сек")
+            print("\n🔍 Сопоставление символов:")
+            for base, actual in mapping.items():
+                status_icon = "✅" if actual else "❌"
+                print(f"   {status_icon} {base} → {actual if actual else 'НЕ НАЙДЕН'}")
+
+    def _show_market_summary(self):
+        """Показать сводку по рынку"""
+        if hasattr(self, 'realtime_monitor') and self.realtime_monitor:
+            summary = self.realtime_monitor.get_market_summary()
+
+            print(f"\n📈 СВОДКА РЫНКА - {summary['timestamp'].strftime('%H:%M:%S')}")
+            print(f"📊 Общее состояние: {summary['market_state']}")
+            print(f"📊 Символов: {summary['successful_symbols']}/{summary['total_symbols']}")
+            print(
+                f"🟢 Бычьих: {summary['bullish_count']} | 🔴 Медвежьих: {summary['bearish_count']} | ⚪ Боковых: {summary['sideways_count']}")
+
+            if summary['top_movers']:
+                print("\n🚀 ТОП-5 ДВИЖУЩИХСЯ СИМВОЛОВ:")
+                for i, mover in enumerate(summary['top_movers'], 1):
+                    change_icon = "🟢" if mover['change'] > 0 else "🔴" if mover['change'] < 0 else "⚪️"
+                    print(
+                        f"   {i}. {mover['symbol']} ({mover['actual_symbol']}): {change_icon} {mover['change']:>+7.2f}% - {mover['current_price']:.5f}")
+
+    def _show_monitored_symbols(self):
+        """Показать отслеживаемые символы"""
+        if hasattr(self, 'realtime_monitor') and self.realtime_monitor:
+            summary = self.realtime_monitor.get_market_summary()
+
+            print(f"\n📋 ОТСЛЕЖИВАЕМЫЕ СИМВОЛЫ ({summary['successful_symbols']}/{summary['total_symbols']}):")
+            print("-" * 50)
+
+            for base_symbol, actual_symbol in self.realtime_monitor.get_symbol_mapping().items():
+                if actual_symbol:
+                    # Получаем данные для символа
+                    market_data = self.realtime_monitor._get_real_time_data()
+                    symbol_data = market_data.get('symbols', {}).get(base_symbol)
+
+                    if symbol_data:
+                        change = symbol_data.get('price_change', 0)
+                        price = symbol_data.get('bid', 0)
+                        change_icon = "🟢" if change > 0 else "🔴" if change < 0 else "⚪️"
+                        print(f"   {change_icon} {base_symbol} → {actual_symbol}: {change:>+7.2f}% - {price:.5f}")
+                    else:
+                        print(f"   ⚠️  {base_symbol} → {actual_symbol}: данные недоступны")
+                else:
+                    print(f"   ❌ {base_symbol} → СИМВОЛ НЕ НАЙДЕН")
 
     def select_symbol(self) -> Optional[str]:
         """Выбор символа из доступных"""
