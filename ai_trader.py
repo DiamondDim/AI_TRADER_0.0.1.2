@@ -180,52 +180,79 @@ class AITrader:
                 self.logger.error("❌ Не удалось получить список символов")
                 return None
 
-            print("\n📊 Доступные символы:")
-            for i, symbol in enumerate(symbols[:20]):  # Показываем первые 20
-                print(f"{i + 1}. {symbol}")
+            print("\n📊 ДОСТУПНЫЕ СИМВОЛЫ:")
+            print("=" * 40)
+
+            # Показываем символы с группировкой
+            forex_symbols = [s for s in symbols if any(
+                currency in s for currency in ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD'])]
+            other_symbols = [s for s in symbols if s not in forex_symbols]
+
+            if forex_symbols:
+                print("\n💱 ВАЛЮТНЫЕ ПАРЫ:")
+                for i, symbol in enumerate(forex_symbols[:15]):  # Показываем первые 15
+                    print(f"  {i + 1}. {symbol}")
+
+            if other_symbols:
+                print("\n📈 ДРУГИЕ ИНСТРУМЕНТЫ:")
+                for i, symbol in enumerate(other_symbols[:10]):  # Показываем первые 10
+                    print(f"  {len(forex_symbols) + i + 1}. {symbol}")
+
+            print("\n" + "=" * 40)
 
             while True:
-                choice = input("\nВыберите символ (номер или название): ").strip()
+                choice = input("\n🎯 Выберите символ (номер или название): ").strip()
+
                 if choice.isdigit():
                     index = int(choice) - 1
                     if 0 <= index < len(symbols):
-                        return symbols[index]
+                        selected = symbols[index]
+                        print(f"✅ Выбран символ: {selected}")
+                        return selected
                     else:
                         print("❌ Неверный номер. Попробуйте снова.")
                 else:
-                    if choice in symbols:
-                        return choice
+                    # Ищем символ по названию
+                    if choice.upper() in symbols:
+                        selected = choice.upper()
+                        print(f"✅ Выбран символ: {selected}")
+                        return selected
                     else:
                         print("❌ Символ не найден. Попробуйте снова.")
+
         except Exception as e:
             self.logger.error(f"❌ Ошибка выбора символа: {e}")
             return None
 
     def select_timeframe(self) -> Optional[str]:
         """Выбор таймфрейма"""
-        try:
-            timeframes = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN1']
-            print("\n⏰ Доступные таймфреймы:")
-            for i, tf in enumerate(timeframes):
-                print(f"{i + 1}. {tf}")
+        timeframes = {
+            '1': ('M1', '1 минута'),
+            '2': ('M5', '5 минут'),
+            '3': ('M15', '15 минут'),
+            '4': ('M30', '30 минут'),
+            '5': ('H1', '1 час'),
+            '6': ('H4', '4 часа'),
+            '7': ('D1', '1 день'),
+            '8': ('W1', '1 неделя'),
+            '9': ('MN1', '1 месяц')
+        }
 
-            while True:
-                choice = input("\nВыберите таймфрейм (номер или название): ").strip()
-                if choice.isdigit():
-                    index = int(choice) - 1
-                    if 0 <= index < len(timeframes):
-                        return timeframes[index]
-                    else:
-                        print("❌ Неверный номер. Попробуйте снова.")
-                else:
-                    choice_upper = choice.upper()
-                    if choice_upper in timeframes:
-                        return choice_upper
-                    else:
-                        print("❌ Таймфрейм не найден. Попробуйте снова.")
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка выбора таймфрейма: {e}")
-            return None
+        print("\n⏰ ДОСТУПНЫЕ ТАЙМФРЕЙМЫ:")
+        print("=" * 40)
+        for key, (tf, desc) in timeframes.items():
+            print(f"  {key}. {tf} - {desc}")
+        print("=" * 40)
+
+        while True:
+            choice = input("\n🎯 Выберите таймфрейм (1-9): ").strip()
+
+            if choice in timeframes:
+                selected_tf = timeframes[choice][0]
+                print(f"✅ Выбран таймфрейм: {selected_tf}")
+                return selected_tf
+            else:
+                print("❌ Неверный выбор. Введите число от 1 до 9.")
 
     def calculate_advanced_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -271,7 +298,7 @@ class AITrader:
             df['ichi_kijun'] = (df['high'].rolling(window=26).max() + df['low'].rolling(window=26).min()) / 2
             df['ichi_senkou_a'] = ((df['ichi_tenkan'] + df['ichi_kijun']) / 2).shift(26)
             df['ichi_senkou_b'] = (
-                        (df['high'].rolling(window=52).max() + df['low'].rolling(window=52).min()) / 2).shift(26)
+                    (df['high'].rolling(window=52).max() + df['low'].rolling(window=52).min()) / 2).shift(26)
             df['ichi_chikou'] = df['close'].shift(-26)
 
             # 7. Volume Weighted Average Price (VWAP)
@@ -289,7 +316,7 @@ class AITrader:
 
             # 10. Williams %R
             df['williams_r'] = (df['high'].rolling(window=14).max() - df['close']) / (
-                        df['high'].rolling(window=14).max() - df['low'].rolling(window=14).min()) * -100
+                    df['high'].rolling(window=14).max() - df['low'].rolling(window=14).min()) * -100
 
             self.logger.info("✅ Расширенные индикаторы успешно рассчитаны")
             return df
@@ -712,7 +739,7 @@ class AITrader:
             print("4 - 🔙 Вернуться в главное меню")
             print("=" * 50)
 
-            choice = input("\nВыберите действие (1-4): ").strip()
+            choice = input("\n🎯 Выберите действие (1-4): ").strip()
 
             if choice == "1":
                 self.run_test_trading(symbol, timeframe, model)
@@ -919,8 +946,8 @@ class AITrader:
                         symbol=symbol,
                         order_type='buy',
                         volume=volume,
-                        stop_loss=sl,
-                        take_profit=tp,
+                        stop_loss_pips=sl,  # ИСПРАВЛЕНО: используем правильное имя параметра
+                        take_profit_pips=tp,  # ИСПРАВЛЕНО: используем правильное имя параметра
                         comment="AI Simple Strategy"
                     )
                     if success:
@@ -946,8 +973,8 @@ class AITrader:
                         symbol=symbol,
                         order_type='sell',
                         volume=volume,
-                        stop_loss=sl,
-                        take_profit=tp,
+                        stop_loss_pips=sl,  # ИСПРАВЛЕНО: используем правильное имя параметра
+                        take_profit_pips=tp,  # ИСПРАВЛЕНО: используем правильное имя параметра
                         comment="AI Simple Strategy"
                     )
                     if success:

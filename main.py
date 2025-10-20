@@ -30,6 +30,90 @@ def interactive_menu():
     print("=" * 60)
 
 
+def select_symbol_interactive(trader):
+    """Интерактивный выбор символа из списка"""
+    try:
+        symbols = trader.data_fetcher.get_symbols()
+        if not symbols:
+            print("❌ Не удалось получить список символов")
+            return None
+
+        print("\n📊 ДОСТУПНЫЕ СИМВОЛЫ:")
+        print("=" * 40)
+
+        # Показываем символы с группировкой
+        forex_symbols = [s for s in symbols if
+                         any(currency in s for currency in ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD'])]
+        other_symbols = [s for s in symbols if s not in forex_symbols]
+
+        if forex_symbols:
+            print("\n💱 ВАЛЮТНЫЕ ПАРЫ:")
+            for i, symbol in enumerate(forex_symbols[:15]):  # Показываем первые 15
+                print(f"  {i + 1}. {symbol}")
+
+        if other_symbols:
+            print("\n📈 ДРУГИЕ ИНСТРУМЕНТЫ:")
+            for i, symbol in enumerate(other_symbols[:10]):  # Показываем первые 10
+                print(f"  {len(forex_symbols) + i + 1}. {symbol}")
+
+        print("\n" + "=" * 40)
+
+        while True:
+            choice = input("\n🎯 Выберите символ (номер или название): ").strip()
+
+            if choice.isdigit():
+                index = int(choice) - 1
+                if 0 <= index < len(symbols):
+                    selected = symbols[index]
+                    print(f"✅ Выбран символ: {selected}")
+                    return selected
+                else:
+                    print("❌ Неверный номер. Попробуйте снова.")
+            else:
+                # Ищем символ по названию
+                if choice.upper() in symbols:
+                    selected = choice.upper()
+                    print(f"✅ Выбран символ: {selected}")
+                    return selected
+                else:
+                    print("❌ Символ не найден. Попробуйте снова.")
+
+    except Exception as e:
+        print(f"❌ Ошибка выбора символа: {e}")
+        return None
+
+
+def select_timeframe_interactive():
+    """Интерактивный выбор таймфрейма"""
+    timeframes = {
+        '1': ('M1', '1 минута'),
+        '2': ('M5', '5 минут'),
+        '3': ('M15', '15 минут'),
+        '4': ('M30', '30 минут'),
+        '5': ('H1', '1 час'),
+        '6': ('H4', '4 часа'),
+        '7': ('D1', '1 день'),
+        '8': ('W1', '1 неделя'),
+        '9': ('MN1', '1 месяц')
+    }
+
+    print("\n⏰ ДОСТУПНЫЕ ТАЙМФРЕЙМЫ:")
+    print("=" * 40)
+    for key, (tf, desc) in timeframes.items():
+        print(f"  {key}. {tf} - {desc}")
+    print("=" * 40)
+
+    while True:
+        choice = input("\n🎯 Выберите таймфрейм (1-9): ").strip()
+
+        if choice in timeframes:
+            selected_tf = timeframes[choice][0]
+            print(f"✅ Выбран таймфрейм: {selected_tf}")
+            return selected_tf
+        else:
+            print("❌ Неверный выбор. Введите число от 1 до 9.")
+
+
 def main():
     """Главная функция"""
     parser = argparse.ArgumentParser(description='AI Trader for MT5 - Console Version')
@@ -62,39 +146,38 @@ def main():
             while True:
                 try:
                     interactive_menu()
-                    choice = input("\nВыберите действие (0-7): ").strip()
+                    choice = input("\n🎯 Выберите действие (0-7): ").strip()
 
                     if choice == "1":
                         trader.show_account_info()
 
                     elif choice == "2":
-                        symbol = input(f"Символ (по умолчанию {trader.settings.DEFAULT_SYMBOL}): ").strip()
+                        # Запуск стратегии с выбором символа и таймфрейма из списка
+                        symbol = select_symbol_interactive(trader)
                         if not symbol:
-                            symbol = trader.settings.DEFAULT_SYMBOL
+                            continue
 
-                        timeframe = input(f"Таймфрейм (по умолчанию {trader.settings.DEFAULT_TIMEFRAME}): ").strip()
+                        timeframe = select_timeframe_interactive()
                         if not timeframe:
-                            timeframe = trader.settings.DEFAULT_TIMEFRAME
+                            continue
 
                         trader.run_simple_strategy(symbol, timeframe)
 
                     elif choice == "3":
-                        symbol = input(f"Символ (по умолчанию {trader.settings.DEFAULT_SYMBOL}): ").strip()
-                        if not symbol:
-                            symbol = trader.settings.DEFAULT_SYMBOL
-
-                        trader.run_test_trade(symbol)
+                        # Тестовая сделка с выбором символа из списка
+                        symbol = select_symbol_interactive(trader)
+                        if symbol:
+                            trader.run_test_trade(symbol)
 
                     elif choice == "4":
                         # Используем новый метод для закрытия позиций
                         trader.close_all_positions_interactive()
 
                     elif choice == "5":
-                        symbol = input(f"Символ (по умолчанию {trader.settings.DEFAULT_SYMBOL}): ").strip()
-                        if not symbol:
-                            symbol = trader.settings.DEFAULT_SYMBOL
-
-                        trader.show_recent_data(symbol)
+                        # Обновление данных с выбором символа из списка
+                        symbol = select_symbol_interactive(trader)
+                        if symbol:
+                            trader.show_recent_data(symbol)
 
                     elif choice == "6":
                         # Новый функционал: Обучение и торговля

@@ -202,7 +202,7 @@ class Trader:
                    stop_loss_pips: float = 0.0, take_profit_pips: float = 0.0,
                    deviation: int = 20, comment: str = "AI Trader") -> Tuple[bool, str]:
         """
-        Отправляет ордер на рынок
+        Отправляет ордер на рынок (версия с пунктами)
 
         Args:
             symbol: торговый символ
@@ -301,6 +301,140 @@ class Trader:
             self.logger.error(error_msg)
             return False, error_msg
 
+    def send_order_with_prices(self, symbol: str, order_type: str, volume: float,
+                               stop_loss: float = 0.0, take_profit: float = 0.0,
+                               deviation: int = 20, comment: str = "AI Trader") -> Tuple[bool, str]:
+        """
+        Отправляет ордер на рынок (версия с абсолютными ценами)
+
+        Args:
+            symbol: торговый символ
+            order_type: тип ордера ('buy' или 'sell')
+            volume: объем в лотах
+            stop_loss: абсолютный уровень стоп-лосса
+            take_profit: абсолютный уровень тейк-профита
+            deviation: максимальное отклонение цены
+            comment: комментарий к ордеру
+
+        Returns:
+            Tuple[bool, str]: (Успешность, Сообщение)
+        """
+        return self._retry_operation(self._send_order_with_prices_impl, symbol, order_type, volume,
+                                     stop_loss, take_profit, deviation, comment)
+
+    def _send_order_with_prices_impl(self, symbol: str, order_type: str, volume: float,
+                                     stop_loss: float = 0.0, take_profit: float = 0.0,
+                                     deviation: int = 20, comment: str = "AI Trader") -> Tuple[bool, str]:
+        """Реализация отправки ордера с абсолютными ценами"""
+        try:
+            if not self.mt5.check_connection():
+                return False, "Нет соединения с MT5"
+
+            # Проверяем условия рынка
+            market_ok, market_msg = self.check_market_conditions(symbol)
+            if not market_ok:
+                return False, market_msg
+
+            # Получаем текущую цену
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                return False, f"Не удалось получить цену для {symbol}"
+
+            # Определяем параметры ордера
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                return False, f"Не удалось получить информацию о символе {symbol}"
+
+            if order_type.lower() == 'buy':
+                order_type_mt5 = mt5.ORDER_TYPE_BUY
+                price = tick.ask
+            elif order_type.lower() == 'sell':
+                order_type_mt5 = mt5.ORDER_TYPE_SELL
+                price = tick.bid
+            else:
+                return False, f"Неизвестный тип ордера: {order_type}"
+
+            # Проверяем стоп-уровни
+            if stop_loss > 0:
+                # Проверяем минимальное расстояние для стоп-лосса
+                min_stop_distance = self._get_min_stop_distance(symbol_info, order_type, price, stop_loss)
+                if min_stop_distance is not None:
+                    return False, min_stop_distance
+
+            if take_profit > 0:
+                # Проверяем минимальное расстояние для тейк-профита
+                min_tp_distance = self._get_min_stop_distance(symbol_info, order_type, price, take_profit, is_tp=True)
+                if min_tp_distance is not None:
+                    return False, min_tp_distance
+
+            # Подготавливаем запрос
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": order_type_mt5,
+                "price": price,
+                "sl": stop_loss,
+                "tp": take_profit,
+                "deviation": deviation,
+                "magic": 202400,
+                "comment": comment,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_FOK,
+            }
+
+            # Отправляем ордер
+            result = mt5.order_send(request)
+
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                error_msg = f"Ошибка ордера {result.retcode}: {self._get_trade_error_description(result.retcode)}"
+                self.logger.error(error_msg)
+                return False, error_msg
+
+            success_msg = f"✅ Ордер выполнен: {order_type.upper()} {volume} {symbol} по цене {price:.5f}"
+            if stop_loss > 0:
+                success_msg += f", SL: {stop_loss:.5f}"
+            if take_profit > 0:
+                success_msg += f", TP: {take_profit:.5f}"
+
+            self.logger.info(success_msg)
+            return True, success_msg
+
+        except Exception as e:
+            error_msg = f"Исключение при отправке ордера: {str(e)}"
+            self.logger.error(error_msg)
+            return False, error_msg
+
+    def _get_min_stop_distance(self, symbol_info, order_type: str, price: float, stop_level: float,
+                               is_tp: bool = False) -> Optional[str]:
+        """Проверяет минимальное расстояние для стоп-уровней"""
+        try:
+            point = symbol_info.point
+            min_stop_level = symbol_info.trade_stops_level * point if symbol_info.trade_stops_level > 0 else 10 * point
+            min_stop_distance = max(min_stop_level, 10 * point)
+
+            level_type = "тейк-профит" if is_tp else "стоп-лосс"
+
+            if order_type.lower() == 'buy':
+                if not is_tp:  # стоп-лосс для покупки
+                    if (price - stop_level) < min_stop_distance:
+                        return f"Стоп-лосс слишком близко к цене (мин. расстояние: {min_stop_distance / point:.1f} пунктов)"
+                else:  # тейк-профит для покупки
+                    if (stop_level - price) < min_stop_distance:
+                        return f"Тейк-профит слишком близко к цене (мин. расстояние: {min_stop_distance / point:.1f} пунктов)"
+            else:  # sell
+                if not is_tp:  # стоп-лосс для продажи
+                    if (stop_level - price) < min_stop_distance:
+                        return f"Стоп-лосс слишком близко к цене (мин. расстояние: {min_stop_distance / point:.1f} пунктов)"
+                else:  # тейк-профит для продажи
+                    if (price - stop_level) < min_stop_distance:
+                        return f"Тейк-профит слишком близко к цене (мин. расстояние: {min_stop_distance / point:.1f} пунктов)"
+
+            return None
+
+        except Exception as e:
+            return f"Ошибка проверки расстояния: {str(e)}"
+
     def _get_trade_error_description(self, error_code: int) -> str:
         """Возвращает описание торговой ошибки MT5"""
         error_descriptions = {
@@ -341,7 +475,7 @@ class Trader:
         return error_descriptions.get(error_code, f"Неизвестная ошибка: {error_code}")
 
     def get_open_positions(self, symbol: str = "") -> List[Dict]:
-        """Получает список открытых позиций с улучшенной обработкой ошибок"""
+        """Получает список открытых позиций с улучшенной обработкой ошибки"""
         try:
             positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
             if positions is None:
