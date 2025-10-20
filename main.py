@@ -85,21 +85,15 @@ def main():
                         trader.run_test_trade(symbol)
 
                     elif choice == "4":
-                        symbol = input("Символ (оставьте пустым для всех): ").strip()
-                        success, message = trader.trader.close_all_positions(symbol)
-                        print(f"📝 {message}")
+                        # Используем новый метод для закрытия позиций
+                        trader.close_all_positions_interactive()
 
                     elif choice == "5":
                         symbol = input(f"Символ (по умолчанию {trader.settings.DEFAULT_SYMBOL}): ").strip()
                         if not symbol:
                             symbol = trader.settings.DEFAULT_SYMBOL
 
-                        data = trader.data_fetcher.get_rates(symbol, trader.settings.DEFAULT_TIMEFRAME, count=10)
-                        if data is not None:
-                            print(f"📈 Последние 10 баров для {symbol}:")
-                            print(data[['open', 'high', 'low', 'close']].tail())
-                        else:
-                            print("❌ Не удалось получить данные")
+                        trader.show_recent_data(symbol)
 
                     elif choice == "6":
                         # Новый функционал: Обучение и торговля

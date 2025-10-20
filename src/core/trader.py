@@ -341,33 +341,43 @@ class Trader:
         return error_descriptions.get(error_code, f"Неизвестная ошибка: {error_code}")
 
     def get_open_positions(self, symbol: str = "") -> List[Dict]:
-        """Получает список открытых позиций"""
+        """Получает список открытых позиций с улучшенной обработкой ошибок"""
         try:
             positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+            if positions is None:
+                return []
+
             if not positions:
                 return []
 
             result = []
             for position in positions:
-                result.append({
-                    'ticket': position.ticket,
-                    'symbol': position.symbol,
-                    'type': 'BUY' if position.type == mt5.ORDER_TYPE_BUY else 'SELL',
-                    'volume': position.volume,
-                    'open_price': position.price_open,
-                    'current_price': position.price_current,
-                    'sl': position.sl,
-                    'tp': position.tp,
-                    'profit': position.profit,
-                    'swap': position.swap,
-                    'commission': position.commission,
-                    'time': datetime.fromtimestamp(position.time)
-                })
+                try:
+                    pos_data = {
+                        'ticket': position.ticket,
+                        'symbol': position.symbol,
+                        'type': 'BUY' if position.type == mt5.ORDER_TYPE_BUY else 'SELL',
+                        'volume': position.volume,
+                        'open_price': position.price_open,
+                        'current_price': position.price_current,
+                        'sl': position.sl,
+                        'tp': position.tp,
+                        'profit': position.profit,
+                        'swap': position.swap,
+                        'time': datetime.fromtimestamp(position.time)
+                    }
+                    result.append(pos_data)
+                except AttributeError as e:
+                    self.logger.warning(f"⚠️ Ошибка получения атрибута позиции: {e}")
+                    continue
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Ошибка обработки позиции: {e}")
+                    continue
 
             return result
 
         except Exception as e:
-            self.logger.error(f"Ошибка получения позиций: {str(e)}")
+            self.logger.error(f"❌ Ошибка получения позиций: {str(e)}")
             return []
 
     def close_position(self, ticket: int, deviation: int = 20) -> Tuple[bool, str]:
@@ -447,7 +457,7 @@ class Trader:
             account_info = self.mt5.get_account_info()
             positions = self.get_open_positions()
 
-            total_profit = sum(pos['profit'] + pos['swap'] + pos['commission'] for pos in positions)
+            total_profit = sum(pos['profit'] + pos['swap'] for pos in positions)
             total_volume = sum(pos['volume'] for pos in positions)
 
             return {

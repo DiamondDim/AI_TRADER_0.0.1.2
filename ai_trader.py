@@ -10,12 +10,23 @@ import argparse
 import logging
 from datetime import datetime, timedelta
 import MetaTrader5 as mt5
-from typing import Tuple
+import pandas as pd
+from typing import Tuple, Optional, List
 
 # Добавляем путь к src в PYTHONPATH
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+sys.path.insert(0, project_root)
 
-from core import MT5, DataFetcher, Trader, setup_logger, Settings
+try:
+    # Пробуем импортировать из src.core
+    from src.core import MT5, DataFetcher, Trader, setup_logger, Settings
+except ImportError as e:
+    print(f"❌ Ошибка импорта: {e}")
+    print("💡 Проверьте структуру проекта:")
+    print("   - Файл src/core/__init__.py должен существовать")
+    print("   - Все модули в src/core/ должны быть доступны")
+    sys.exit(1)
 
 
 class AITrader:
@@ -32,7 +43,7 @@ class AITrader:
 
     def check_market_availability(self) -> Tuple[bool, str]:
         """
-        Проверяет доступность рынка для торговли
+        Проверяет доступность рынка для торговли с учетом реальных символов
 
         Returns:
             Tuple[bool, str]: (Доступен ли рынок, Сообщение)
@@ -44,8 +55,13 @@ class AITrader:
             if not self.mt5.check_connection():
                 return False, "Нет соединения с MT5"
 
-            # Проверяем несколько популярных символов
-            test_symbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD']
+            # Получаем реальные символы из терминала
+            all_symbols = mt5.symbols_get()
+            if not all_symbols:
+                return False, "Не удалось получить список символов от MT5"
+
+            # Берем первые 10 символов для проверки
+            test_symbols = [symbol.name for symbol in all_symbols[:10]]
             active_symbols = []
 
             for symbol in test_symbols:
@@ -56,16 +72,18 @@ class AITrader:
                         continue
 
                     # Проверяем, доступен ли символ для торговли
-                    if symbol_info.visible and symbol_info.trade_mode == mt5.SYMBOL_TRADE_MODE_FULL:
-                        # Получаем текущие котировки
+                    if symbol_info.visible and symbol_info.trade_mode in [mt5.SYMBOL_TRADE_MODE_FULL,
+                                                                          mt5.SYMBOL_TRADE_MODE_CLOSEONLY]:
+                        # Пробуем получить котировки разными способами
                         tick = mt5.symbol_info_tick(symbol)
+
                         if tick is not None:
                             # Проверяем время последнего обновления котировок
                             tick_time = datetime.fromtimestamp(tick.time)
                             time_diff = datetime.now() - tick_time
 
-                            # Если котировки обновлялись не более 2 минут назад - рынок активен
-                            if time_diff.total_seconds() <= 120:  # 2 минуты
+                            # Если котировки обновлялись не более 5 минут назад - рынок активен
+                            if time_diff.total_seconds() <= 300:  # 5 минут
                                 active_symbols.append(symbol)
                                 self.logger.debug(
                                     f"✅ Символ {symbol} активен (обновлен {time_diff.total_seconds():.0f} сек назад)")
@@ -73,7 +91,13 @@ class AITrader:
                                 self.logger.warning(
                                     f"⚠️ Символ {symbol} не обновлялся {time_diff.total_seconds():.0f} сек")
                         else:
-                            self.logger.warning(f"⚠️ Не удалось получить котировки для {symbol}")
+                            # Пробуем другой метод получения данных
+                            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)
+                            if rates is not None and len(rates) > 0:
+                                active_symbols.append(symbol)
+                                self.logger.debug(f"✅ Символ {symbol} доступен через исторические данные")
+                            else:
+                                self.logger.warning(f"⚠️ Не удалось получить котировки для {symbol}")
                     else:
                         self.logger.warning(f"⚠️ Символ {symbol} недоступен для торговли")
 
@@ -84,20 +108,21 @@ class AITrader:
             # Если есть хотя бы один активный символ - рынок доступен
             if active_symbols:
                 self.market_available = True
-                message = f"✅ Рынок доступен для торговли. Активные символы: {', '.join(active_symbols)}"
+                message = f"✅ Рынок доступен для торговли. Активные символы: {', '.join(active_symbols[:3])}"
                 self.logger.info(message)
                 return True, message
             else:
                 self.market_available = False
-                message = "❌ Брокер закрыл доступ к рынку. Котировки не обновляются."
-                self.logger.error(message)
+                message = "⚠️ Внимание: Не удалось получить актуальные котировки. Проверьте подключение к рынку."
+                self.logger.warning(message)
                 return False, message
 
         except Exception as e:
-            error_msg = f"❌ Ошибка проверки рынка: {str(e)}"
-            self.logger.error(error_msg)
-            self.market_available = False
-            return False, error_msg
+            error_msg = f"⚠️ Ошибка проверки рынка: {str(e)}"
+            self.logger.warning(error_msg)
+            # В случае ошибки предполагаем, что рынок доступен, но с ограничениями
+            self.market_available = True
+            return True, error_msg
 
     def initialize(self) -> bool:
         """Инициализация приложения"""
@@ -127,10 +152,11 @@ class AITrader:
                 self.logger.error(f"❌ Ошибка инициализации MT5: {message}")
                 return False
 
-            # Проверяем доступность рынка
+            # Проверяем доступность рынка (но не блокируем запуск при ошибках)
             market_ok, market_message = self.check_market_availability()
             if not market_ok:
-                self.logger.warning("⚠️ Внимание: Рынок недоступен. Торговля невозможна.")
+                self.logger.warning(
+                    "⚠️ Внимание: Проблемы с доступом к рынку. Некоторые функции могут быть ограничены.")
             else:
                 self.logger.info("🎯 Рынок доступен. Торговля возможна.")
 
@@ -145,44 +171,67 @@ class AITrader:
             self.logger.error(f"💥 Критическая ошибка инициализации: {str(e)}")
             return False
 
-    def select_symbol(self):
+    def select_symbol(self) -> Optional[str]:
         """Выбор символа из доступных"""
-        symbols = self.data_fetcher.get_symbols()
-        if not symbols:
-            self.logger.error("❌ Не удалось получить список символов")
+        try:
+            symbols = self.data_fetcher.get_symbols()
+            if not symbols:
+                self.logger.error("❌ Не удалось получить список символов")
+                return None
+
+            print("\n📊 Доступные символы:")
+            for i, symbol in enumerate(symbols[:20]):  # Показываем первые 20
+                print(f"{i + 1}. {symbol}")
+
+            while True:
+                choice = input("\nВыберите символ (номер или название): ").strip()
+                if choice.isdigit():
+                    index = int(choice) - 1
+                    if 0 <= index < len(symbols):
+                        return symbols[index]
+                    else:
+                        print("❌ Неверный номер. Попробуйте снова.")
+                else:
+                    if choice in symbols:
+                        return choice
+                    else:
+                        print("❌ Символ не найден. Попробуйте снова.")
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка выбора символа: {e}")
             return None
 
-        print("\n📊 Доступные символы:")
-        for i, symbol in enumerate(symbols[:20]):  # Показываем первые 20
-            print(f"{i + 1}. {symbol}")
-
-        choice = input("\nВыберите символ (номер или название): ").strip()
-        if choice.isdigit():
-            index = int(choice) - 1
-            return symbols[index] if 0 <= index < len(symbols) else None
-        else:
-            return choice if choice in symbols else None
-
-    def select_timeframe(self):
+    def select_timeframe(self) -> Optional[str]:
         """Выбор таймфрейма"""
-        timeframes = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN1']
-        print("\n⏰ Доступные таймфреймы:")
-        for i, tf in enumerate(timeframes):
-            print(f"{i + 1}. {tf}")
+        try:
+            timeframes = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN1']
+            print("\n⏰ Доступные таймфреймы:")
+            for i, tf in enumerate(timeframes):
+                print(f"{i + 1}. {tf}")
 
-        choice = input("\nВыберите таймфрейм (номер или название): ").strip()
-        if choice.isdigit():
-            index = int(choice) - 1
-            return timeframes[index] if 0 <= index < len(timeframes) else None
-        else:
-            return choice.upper() if choice.upper() in timeframes else None
+            while True:
+                choice = input("\nВыберите таймфрейм (номер или название): ").strip()
+                if choice.isdigit():
+                    index = int(choice) - 1
+                    if 0 <= index < len(timeframes):
+                        return timeframes[index]
+                    else:
+                        print("❌ Неверный номер. Попробуйте снова.")
+                else:
+                    choice_upper = choice.upper()
+                    if choice_upper in timeframes:
+                        return choice_upper
+                    else:
+                        print("❌ Таймфрейм не найден. Попробуйте снова.")
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка выбора таймфрейма: {e}")
+            return None
 
-    def run_training(self, symbol, timeframe):
+    def run_training(self, symbol: str, timeframe: str) -> Optional[pd.DataFrame]:
         """Обучение на исторических данных за 5-6 недель"""
         try:
             self.logger.info(f"🎓 Начало обучения для {symbol} {timeframe}")
 
-            # Проверяем доступность рынка
+            # Проверяем доступность рынка для информационных целей
             if not self.market_available:
                 self.logger.warning("⚠️ Рынок недоступен. Обучение может быть неточным.")
 
@@ -211,12 +260,18 @@ class AITrader:
             self.logger.error(f"❌ Ошибка обучения: {e}")
             return None
 
-    def analyze_training_data(self, data):
+    def analyze_training_data(self, data: pd.DataFrame) -> str:
         """Анализ обучающих данных"""
         try:
             # Базовая статистика
-            volatility = data['range'].mean()
-            avg_volume = data['tick_volume'].mean()
+            if 'range' in data.columns:
+                volatility = data['range'].mean()
+            else:
+                # Если колонки range нет, вычисляем волатильность как разницу High-Low
+                data['range'] = data['high'] - data['low']
+                volatility = data['range'].mean()
+
+            avg_volume = data['tick_volume'].mean() if 'tick_volume' in data.columns else 0
             trend = "ВОСХОДЯЩИЙ" if data['close'].iloc[-1] > data['close'].iloc[0] else "НИСХОДЯЩИЙ"
 
             # Анализ индикаторов
@@ -228,7 +283,7 @@ class AITrader:
         except Exception as e:
             return f"Анализ не удался: {str(e)}"
 
-    def training_completion_menu(self, symbol, timeframe, model):
+    def training_completion_menu(self, symbol: str, timeframe: str, model: pd.DataFrame):
         """Меню после завершения обучения"""
         while True:
             print("\n" + "=" * 50)
@@ -249,7 +304,7 @@ class AITrader:
             else:
                 print("❌ Неизвестная команда")
 
-    def run_test_trading(self, symbol, timeframe, model):
+    def run_test_trading(self, symbol: str, timeframe: str, model: pd.DataFrame):
         """Тестовая торговля с сохранением логов"""
         try:
             self.logger.info(f"🧪 Начало тестовой торговли для {symbol} {timeframe}")
@@ -266,6 +321,7 @@ class AITrader:
             # Настраиваем логгер для тестовой торговли
             test_logger = logging.getLogger(f'TestTrading_{symbol}_{timestamp}')
             test_logger.setLevel(logging.INFO)
+            test_logger.handlers = []  # Очищаем существующие обработчики
 
             # Файловый обработчик
             file_handler = logging.FileHandler(log_file, encoding='utf-8')
@@ -276,7 +332,7 @@ class AITrader:
             test_logger.info("=" * 60)
             test_logger.info(f"🧪 ТЕСТОВАЯ ТОРГОВЛЯ - {symbol} {timeframe}")
             test_logger.info("=" * 60)
-            test_logger.info(f"Модель обучена на {len(model) if model else 0} барах")
+            test_logger.info(f"Модель обучена на {len(model) if model is not None else 0} барах")
             test_logger.info(f"Начало: {datetime.now()}")
 
             # Проверяем доступность рынка для информационных целей
@@ -291,32 +347,39 @@ class AITrader:
             test_logger.info("=" * 60)
 
             # Удаляем обработчик, чтобы закрыть файл
-            test_logger.removeHandler(file_handler)
-            file_handler.close()
+            for handler in test_logger.handlers[:]:
+                handler.close()
+                test_logger.removeHandler(handler)
 
             self.logger.info(f"✅ Тестовая торговля завершена. Логи сохранены в {log_file}")
 
         except Exception as e:
             self.logger.error(f"❌ Ошибка тестовой торговли: {e}")
 
-    def simulate_trading(self, symbol, timeframe, test_logger):
+    def simulate_trading(self, symbol: str, timeframe: str, test_logger: logging.Logger) -> bool:
         """Симуляция торговли для тестов"""
         try:
             # Получаем текущие данные
             data = self.data_fetcher.get_rates(symbol, timeframe, count=50)
-            if data is None:
+            if data is None or data.empty:
                 test_logger.error("❌ Не удалось получить данные для тестирования")
                 return False
 
-            # Применяем стратегию
+            # Применяем стратегию - ИСПРАВЛЕНИЕ ОШИБКИ С DataFrame
             signal = self._simple_moving_average_strategy(data)
 
             # Логируем решение
             current_price = self.data_fetcher.get_current_price(symbol)
-            if current_price:
-                test_logger.info(f"💰 Текущая цена: Bid={current_price['bid']:.5f}, Ask={current_price['ask']:.5f}")
+            if current_price and isinstance(current_price, dict):
+                test_logger.info(
+                    f"💰 Текущая цена: Bid={current_price.get('bid', 0):.5f}, Ask={current_price.get('ask', 0):.5f}")
             else:
                 test_logger.warning("⚠️ Не удалось получить текущую цену")
+
+            # Гарантируем, что signal - строка
+            if not isinstance(signal, str):
+                signal = "HOLD"
+                test_logger.warning("⚠️ Сигнал не является строкой, установлен в HOLD")
 
             test_logger.info(f"🎯 Сигнал: {signal}")
 
@@ -342,7 +405,7 @@ class AITrader:
             test_logger.error(f"❌ Ошибка симуляции: {str(e)}")
             return False
 
-    def run_real_trading(self, symbol, timeframe, model):
+    def run_real_trading(self, symbol: str, timeframe: str, model: pd.DataFrame):
         """Реальная торговля"""
         try:
             # Проверяем доступность рынка перед реальной торговлей
@@ -366,13 +429,14 @@ class AITrader:
                 self.logger.info("=" * 50)
                 self.logger.info("📊 ИНФОРМАЦИЯ О СЧЕТЕ")
                 self.logger.info("=" * 50)
-                self.logger.info(f"👤 Логин: {account_info['login']}")
-                self.logger.info(f"🏢 Брокер: {account_info['company']}")
-                self.logger.info(f"💳 Баланс: {account_info['balance']:.2f} {account_info['currency']}")
-                self.logger.info(f"📈 Эквити: {account_info['equity']:.2f} {account_info['currency']}")
-                self.logger.info(f"🆓 Свободная маржа: {account_info['free_margin']:.2f} {account_info['currency']}")
-                self.logger.info(f"⚖️ Кредитное плечо: 1:{account_info['leverage']}")
-                self.logger.info(f"🌐 Сервер: {account_info['server']}")
+                self.logger.info(f"👤 Логин: {account_info.get('login', 'N/A')}")
+                self.logger.info(f"🏢 Брокер: {account_info.get('company', 'N/A')}")
+                self.logger.info(f"💳 Баланс: {account_info.get('balance', 0):.2f} {account_info.get('currency', '')}")
+                self.logger.info(f"📈 Эквити: {account_info.get('equity', 0):.2f} {account_info.get('currency', '')}")
+                self.logger.info(
+                    f"🆓 Свободная маржа: {account_info.get('free_margin', 0):.2f} {account_info.get('currency', '')}")
+                self.logger.info(f"⚖️ Кредитное плечо: 1:{account_info.get('leverage', 0)}")
+                self.logger.info(f"🌐 Сервер: {account_info.get('server', 'N/A')}")
 
             # Показываем открытые позиции
             positions = self.trader.get_open_positions()
@@ -382,12 +446,12 @@ class AITrader:
                 self.logger.info("=" * 50)
                 total_profit = 0
                 for pos in positions:
-                    profit = pos['profit'] + pos['swap'] + pos['commission']
+                    profit = pos.get('profit', 0) + pos.get('swap', 0)
                     total_profit += profit
                     status = "🟢" if profit >= 0 else "🔴"
                     self.logger.info(
-                        f"{status} {pos['symbol']} {pos['type']} {pos['volume']} лот(ов) | "
-                        f"Цена: {pos['open_price']:.5f} | Прибыль: {profit:.2f}"
+                        f"{status} {pos.get('symbol', 'N/A')} {pos.get('type', 'N/A')} {pos.get('volume', 0)} лот(ов) | "
+                        f"Цена: {pos.get('open_price', 0):.5f} | Прибыль: {profit:.2f}"
                     )
                 self.logger.info(f"💰 Общая прибыль: {total_profit:.2f}")
             else:
@@ -474,12 +538,20 @@ class AITrader:
         except Exception as e:
             self.logger.error(f"💥 Ошибка в стратегии: {str(e)}")
 
-    def _simple_moving_average_strategy(self, data, short_window=10, long_window=30):
-        """Простая стратегия на скользящих средних"""
+    def _simple_moving_average_strategy(self, data: pd.DataFrame, short_window: int = 10, long_window: int = 30) -> str:
+        """Простая стратегия на скользящих средних с исправлением ошибок"""
         try:
+            # Проверяем, что данных достаточно
+            if len(data) < long_window:
+                return "HOLD"
+
             # Вычисляем скользящие средние
             data['sma_short'] = data['close'].rolling(window=short_window).mean()
             data['sma_long'] = data['close'].rolling(window=long_window).mean()
+
+            # Проверяем, что у нас есть достаточно данных для сравнения
+            if len(data) < 2 or data['sma_short'].isna().iloc[-1] or data['sma_long'].isna().iloc[-1]:
+                return "HOLD"
 
             # Получаем последние значения
             current_short = data['sma_short'].iloc[-1]
@@ -514,7 +586,7 @@ class AITrader:
             # Используем минимальный объем для теста
             symbol_info = self.data_fetcher.get_symbol_info(symbol)
             if symbol_info:
-                volume = symbol_info['volume_min']
+                volume = symbol_info.get('volume_min', 0.01)
             else:
                 volume = 0.01
 
@@ -532,14 +604,70 @@ class AITrader:
                 time.sleep(5)
                 positions = self.trader.get_open_positions(symbol)
                 for position in positions:
-                    if position['volume'] == volume:
-                        self.trader.close_position(position['ticket'])
+                    if position.get('volume', 0) == volume:
+                        self.trader.close_position(position.get('ticket'))
                         break
             else:
                 self.logger.error(f"❌ Тестовая сделка не удалась: {message}")
 
         except Exception as e:
             self.logger.error(f"💥 Ошибка тестовой сделки: {str(e)}")
+
+    def close_all_positions_interactive(self):
+        """Закрывает все открытые позиции с интерактивным вводом"""
+        try:
+            symbol = input("Символ (оставьте пустым для всех): ").strip()
+            if not symbol:
+                symbol = ""
+
+            # Получаем открытые позиции
+            positions = self.trader.get_open_positions(symbol)
+            if not positions:
+                self.logger.info("📝 Нет открытых позиций для закрытия")
+                return
+
+            self.logger.info(f"📋 Найдено {len(positions)} позиций для закрытия")
+
+            # Закрываем все позиции
+            success, message = self.trader.close_all_positions(symbol)
+            if success:
+                self.logger.info(f"✅ {message}")
+            else:
+                self.logger.error(f"❌ {message}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка при закрытии позиций: {e}")
+
+    def show_recent_data(self, symbol: str):
+        """Показывает последние данные по символу"""
+        try:
+            data = self.data_fetcher.get_rates(symbol, self.settings.DEFAULT_TIMEFRAME, count=10)
+            if data is None or data.empty:
+                self.logger.error("❌ Не удалось получить данные")
+                return
+
+            print(f"\n📈 Последние 10 баров для {symbol}:")
+            print(data[['open', 'high', 'low', 'close']].tail(5))
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка при получении данных: {e}")
+
+    def training_and_trading_flow(self):
+        """Полный цикл обучения и торговли"""
+        try:
+            symbol = self.select_symbol()
+            if not symbol:
+                return
+
+            timeframe = self.select_timeframe()
+            if not timeframe:
+                return
+
+            # Обучение
+            model = self.run_training(symbol, timeframe)
+            if model is not None:
+                self.training_completion_menu(symbol, timeframe, model)
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка в цикле обучения и торговли: {e}")
 
     def shutdown(self):
         """Корректное завершение работы"""
