@@ -25,6 +25,7 @@ def interactive_menu():
     print("4 - 🚫 Закрыть все позиции")
     print("5 - 🔄 Обновить данные")
     print("6 - 🎓 Обучение и торговля")
+    print("7 - 🔍 Анализ рынка и предсказания")
     print("0 - 🚪 Выход")
     print("=" * 60)
 
@@ -61,7 +62,7 @@ def main():
             while True:
                 try:
                     interactive_menu()
-                    choice = input("\nВыберите действие (0-6): ").strip()
+                    choice = input("\nВыберите действие (0-7): ").strip()
 
                     if choice == "1":
                         trader.show_account_info()
@@ -97,29 +98,17 @@ def main():
 
                     elif choice == "6":
                         # Новый функционал: Обучение и торговля
-                        symbol = trader.select_symbol()
-                        if not symbol:
-                            print("❌ Неверный символ")
-                            continue
+                        trader.training_and_trading_flow()
 
-                        timeframe = trader.select_timeframe()
-                        if not timeframe:
-                            print("❌ Неверный таймфрейм")
-                            continue
-
-                        print(f"🎓 Обучение для {symbol} {timeframe}...")
-                        model = trader.run_training(symbol, timeframe)
-
-                        if model is not None:
-                            trader.training_completion_menu(symbol, timeframe, model)
-                        else:
-                            print("❌ Обучение не удалось")
+                    elif choice == "7":
+                        # Новый пункт: Анализ рынка и предсказания
+                        trader.market_analysis_flow()
 
                     elif choice == "0":
                         print("👋 Завершение работы...")
                         break
                     else:
-                        print("❌ Неизвестная команда. Выберите число от 0 до 6.")
+                        print("❌ Неизвестная команда. Выберите число от 0 до 7.")
 
                     input("\n📝 Нажмите Enter для продолжения...")
 
