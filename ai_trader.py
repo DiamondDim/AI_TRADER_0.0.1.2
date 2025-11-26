@@ -1554,6 +1554,219 @@ class AITrader:
             else:
                 print("❌ Неверный выбор. Введите число от 1 до 9.")
 
+    # ========== ДОБАВЛЕННЫЕ МЕТОДЫ ДЛЯ РАБОТЫ С MAIN.PY ==========
+
+    def analyze_symbol(self, symbol: str):
+        """Анализ конкретного символа - метод для main.py"""
+        try:
+            print(f"\n🔍 АНАЛИЗ СИМВОЛА {symbol}")
+            print("-" * 40)
+
+            # Получаем информацию о символе
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                print(f"❌ Символ {symbol} не найден")
+                return
+
+            # Получаем текущие цены
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                print(f"❌ Не удалось получить данные для {symbol}")
+                return
+
+            # Базовая информация
+            print(f"📋 Описание: {symbol_info.description}")
+            print(f"💵 Бид/Аск: {tick.bid:.5f} / {tick.ask:.5f}")
+            print(f"📊 Спред: {(tick.ask - tick.bid):.5f} пунктов")
+            print(f"📈 Мин. шаг цены: {symbol_info.trade_tick_size}")
+            print(f"💰 Мин. объем: {symbol_info.trade_contract_size}")
+
+            # Получаем исторические данные для анализа
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 0, 24)
+            if rates is not None:
+                df = pd.DataFrame(rates)
+                df['time'] = pd.to_datetime(df['time'], unit='s')
+
+                print(f"\n📊 СТАТИСТИКА ЗА 24 ЧАСА:")
+                print(f"   📈 Высшая цена: {df['high'].max():.5f}")
+                print(f"   📉 Низшая цена: {df['low'].min():.5f}")
+                print(f"   📊 Волатильность: {(df['high'].max() - df['low'].min()):.5f}")
+                print(f"   📦 Средний объем: {df['tick_volume'].mean():.0f}")
+
+            print(f"\n✅ Анализ завершен для {symbol}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка анализа символа {symbol}: {e}")
+            print(f"❌ Ошибка при анализе символа: {e}")
+
+    def show_available_symbols(self):
+        """Показать список доступных символов - метод для main.py"""
+        try:
+            symbols = mt5.symbols_get()
+            print(f"\n📊 ДОСТУПНЫЕ СИМВОЛЫ ({len(symbols)}):")
+            print("-" * 50)
+
+            # Группируем по категориям
+            forex_symbols = [s for s in symbols if
+                             'forex' in s.path.lower() or any(curr in s.name for curr in ['USD', 'EUR', 'GBP', 'JPY'])]
+            crypto_symbols = [s for s in symbols if 'crypto' in s.path.lower()]
+            indices_symbols = [s for s in symbols if 'index' in s.path.lower()]
+
+            print("\n💱 ФОРЕКС:")
+            for symbol in forex_symbols[:10]:
+                print(f"   {symbol.name} - {symbol.description}")
+
+            print("\n₿ КРИПТОВАЛЮТЫ:")
+            for symbol in crypto_symbols[:5]:
+                print(f"   {symbol.name} - {symbol.description}")
+
+            print("\n📈 ИНДЕКСЫ:")
+            for symbol in indices_symbols[:5]:
+                print(f"   {symbol.name} - {symbol.description}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка получения списка символов: {e}")
+            print("❌ Не удалось загрузить список символов")
+
+    def technical_analysis_flow(self, symbol: str, timeframe: str = 'H1'):
+        """Поток технического анализа - метод для main.py"""
+        try:
+            print(f"\n📈 ТЕХНИЧЕСКИЙ АНАЛИЗ {symbol} ({timeframe})")
+            print("-" * 50)
+
+            if not self.current_strategy:
+                print("❌ Сначала установите стратегию")
+                return
+
+            # Получаем данные для анализа
+            rates = self.data_fetcher.get_rates(symbol, timeframe, count=100)
+            if rates is None or len(rates) == 0:
+                print(f"❌ Не удалось получить данные для {symbol}")
+                return
+
+            # Выполняем анализ с помощью текущей стратегии
+            analysis = self.current_strategy.analyze(rates)
+
+            print(f"🎯 СИГНАЛ: {analysis['signal']}")
+            print(f"📊 УВЕРЕННОСТЬ: {analysis['confidence']:.2%}")
+            print(f"💪 СИЛА ТРЕНДА: {analysis.get('trend_strength', 'N/A')}")
+
+            if 'indicators' in analysis:
+                print(f"\n📈 ИНДИКАТОРЫ:")
+                for indicator, value in analysis['indicators'].items():
+                    print(f"   {indicator}: {value}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка технического анализа: {e}")
+            print(f"❌ Ошибка анализа: {e}")
+
+    def trading_operations_flow(self):
+        """Поток торговых операций - метод для main.py"""
+        try:
+            print("\n💰 ТОРГОВЫЕ ОПЕРАЦИИ")
+            print("-" * 30)
+            print("1. 📈 Открыть длинную позицию")
+            print("2. 📉 Открыть короткую позицию")
+            print("3. 🚪 Закрыть все позиции")
+            print("4. 📋 Показать открытые позиции")
+            print("5. 🔙 Назад")
+
+            choice = input("\nВыберите операцию: ").strip()
+
+            if choice == '1':
+                self._open_position_flow('buy')
+            elif choice == '2':
+                self._open_position_flow('sell')
+            elif choice == '3':
+                self.trader.close_all_positions()
+                print("✅ Все позиции закрыты")
+            elif choice == '4':
+                self.show_positions_and_orders()
+            elif choice == '5':
+                return
+            else:
+                print("❌ Неверный выбор")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка в торговых операциях: {e}")
+            print(f"❌ Ошибка: {e}")
+
+    def _open_position_flow(self, order_type: str):
+        """Поток открытия позиции"""
+        try:
+            symbol = input("Введите символ: ").strip() or self.settings.DEFAULT_SYMBOL
+            volume = float(input("Введите объем (например 0.01): ").strip() or "0.01")
+
+            # Проверяем символ
+            if not mt5.symbol_info(symbol):
+                print(f"❌ Символ {symbol} не найден")
+                return
+
+            # Открываем позицию
+            result = self.trader.open_position(
+                symbol=symbol,
+                order_type=order_type,
+                volume=volume,
+                stop_loss=self.settings.STOPLOSS_PIPS,
+                take_profit=self.settings.TAKEPROFIT_PIPS
+            )
+
+            if result:
+                print(f"✅ Позиция успешно открыта")
+            else:
+                print("❌ Не удалось открыть позицию")
+
+        except ValueError:
+            print("❌ Неверный формат объема")
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка открытия позиции: {e}")
+            print(f"❌ Ошибка: {e}")
+
+    def show_positions_and_orders(self):
+        """Показать открытые позиции и ордера - метод для main.py"""
+        try:
+            print("\n📋 ОТКРЫТЫЕ ПОЗИЦИИ И ОРДЕРА")
+            print("-" * 40)
+
+            # Получаем позиции
+            positions = mt5.positions_get()
+            if positions:
+                print(f"📊 Открыто позиций: {len(positions)}")
+                for pos in positions:
+                    profit_color = "🟢" if pos.profit >= 0 else "🔴"
+                    print(
+                        f"   {pos.symbol} | {pos.type} | Объем: {pos.volume} | Profit: {profit_color} {pos.profit:.2f}")
+            else:
+                print("📭 Нет открытых позиций")
+
+            # Получаем ордера
+            orders = mt5.orders_get()
+            if orders:
+                print(f"\n📋 Активные ордера: {len(orders)}")
+                for order in orders:
+                    print(f"   {order.symbol} | {order.type} | Объем: {order.volume_initial}")
+            else:
+                print("📭 Нет активных ордеров")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка получения позиций: {e}")
+            print("❌ Не удалось загрузить позиции")
+
+    def update_risk_management(self, risk_percent: float):
+        """Обновление управления рисками - метод для main.py"""
+        self.settings.RISK_PERCENT = risk_percent
+        self.logger.info(f"⚙️ Обновлен уровень риска: {risk_percent}%")
+
+    def get_current_strategy(self):
+        """Получение информации о текущей стратегии - метод для main.py"""
+        if self.current_strategy:
+            return {
+                'name': self.current_strategy.name,
+                'description': self.current_strategy.description,
+                'risk_level': getattr(self.current_strategy, 'risk_level', 'Неизвестно')
+            }
+        return None
+
     def shutdown(self):
         """Корректное завершение работы"""
         self.logger.info("🛑 Завершение работы AI Trader...")
